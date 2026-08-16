@@ -1,0 +1,16 @@
+{
+  "mode": "FIELD",
+  "minutes": 20.4,
+  "arm_events": 12,
+  "false_arms_per_20min": 11.76,
+  "arm_trials": 0,
+  "arm_successes": 0,
+  "arm_times": [],
+  "still_tol": 0.25,
+  "size_band": [
+    0.035,
+    0.3
+  ],
+  "palm_sign": 1.0,
+  "timestamp": "2026-08-11T03:20:35"
+}

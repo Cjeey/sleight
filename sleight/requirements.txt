@@ -1,0 +1,5 @@
+mediapipe==0.10.21
+opencv-python>=4.9.0
+numpy<2
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-ApplicationServices>=10.0

@@ -1,0 +1,147 @@
+{
+  "key_width_px": 102.4,
+  "steadiness": {
+    "samples": 142,
+    "rms_drift_px": 9.5,
+    "max_drift_px": 26.8
+  },
+  "targets": {
+    "trials": 15,
+    "hits": 0,
+    "accuracy_pct": 0.0,
+    "mean_seconds_per_hit": null,
+    "timeouts": 0,
+    "detail": [
+      {
+        "target": "X",
+        "pressed": "X",
+        "hit": false,
+        "seconds": 2.089,
+        "miss_distance_px": 41.5,
+        "timed_out": false
+      },
+      {
+        "target": "1",
+        "pressed": "1",
+        "hit": false,
+        "seconds": 1.672,
+        "miss_distance_px": 35.2,
+        "timed_out": false
+      },
+      {
+        "target": "H",
+        "pressed": "H",
+        "hit": false,
+        "seconds": 1.304,
+        "miss_distance_px": 11.0,
+        "timed_out": false
+      },
+      {
+        "target": "2",
+        "pressed": "3",
+        "hit": false,
+        "seconds": 1.069,
+        "miss_distance_px": 110.9,
+        "timed_out": false
+      },
+      {
+        "target": "H",
+        "pressed": "Y",
+        "hit": false,
+        "seconds": 1.232,
+        "miss_distance_px": 50.6,
+        "timed_out": false
+      },
+      {
+        "target": "O",
+        "pressed": "O",
+        "hit": false,
+        "seconds": 1.206,
+        "miss_distance_px": 43.6,
+        "timed_out": false
+      },
+      {
+        "target": "W",
+        "pressed": "W",
+        "hit": false,
+        "seconds": 1.667,
+        "miss_distance_px": 44.3,
+        "timed_out": false
+      },
+      {
+        "target": "0",
+        "pressed": "9",
+        "hit": false,
+        "seconds": 0.96,
+        "miss_distance_px": 76.6,
+        "timed_out": false
+      },
+      {
+        "target": "D",
+        "pressed": "D",
+        "hit": false,
+        "seconds": 1.437,
+        "miss_distance_px": 31.7,
+        "timed_out": false
+      },
+      {
+        "target": "I",
+        "pressed": "I",
+        "hit": false,
+        "seconds": 1.301,
+        "miss_distance_px": 12.3,
+        "timed_out": false
+      },
+      {
+        "target": "E",
+        "pressed": "E",
+        "hit": false,
+        "seconds": 1.572,
+        "miss_distance_px": 24.8,
+        "timed_out": false
+      },
+      {
+        "target": "H",
+        "pressed": "H",
+        "hit": false,
+        "seconds": 1.437,
+        "miss_distance_px": 33.4,
+        "timed_out": false
+      },
+      {
+        "target": "A",
+        "pressed": "A",
+        "hit": false,
+        "seconds": 1.327,
+        "miss_distance_px": 25.7,
+        "timed_out": false
+      },
+      {
+        "target": "Q",
+        "pressed": "Q",
+        "hit": false,
+        "seconds": 1.504,
+        "miss_distance_px": 39.6,
+        "timed_out": false
+      },
+      {
+        "target": "P",
+        "pressed": "P",
+        "hit": false,
+        "seconds": 1.367,
+        "miss_distance_px": 22.6,
+        "timed_out": false
+      }
+    ]
+  },
+  "phrase": {
+    "target": "the quick brown fox",
+    "typed": "the quick brown fox",
+    "seconds": 41.0,
+    "wpm": 5.6,
+    "char_errors": 0,
+    "error_rate_pct": 0.0
+  },
+  "method": "pinch",
+  "timestamp": "2026-08-11T02:24:16"
+}

@@ -1,0 +1,11 @@
+# models + logs: big, regenerable, or personal
+*.npz
+*.task
+sleight_log_*.jsonl
+sleight_config.backup.json
+keyboard-test/.venv/
+**/.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.gstack/

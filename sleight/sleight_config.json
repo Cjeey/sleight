@@ -1,0 +1,20 @@
+{
+  "palm_sign": 1.0,
+  "calibrated_hand": "Left",
+  "still_tol": 0.22,
+  "size_band": [
+    0.035,
+    0.3
+  ],
+  "scroll_flip": false,
+  "scroll_gain": 900.0,
+  "cursor_deadzone": 0.009,
+  "swipe_left_key": "forward",
+  "swipe_right_key": "back",
+  "tutorial_done": true,
+  "panel_pos": "center",
+  "widget_xy": [
+    948.0,
+    27.0
+  ]
+}
