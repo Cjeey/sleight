@@ -1,5 +1,5 @@
 """
-Sleyth v8.1 - trackpad in the air.
+Sleyth v8.2 - trackpad in the air.
 
 Gestures (after summoning):
 
@@ -84,7 +84,7 @@ except ImportError:
     kAXTrustedCheckOptionPrompt = None
 
 
-VERSION = "8.1"                # one place; shown on screen and by --check
+VERSION = "8.2"                # one place; shown on screen and by --check
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -204,6 +204,11 @@ DOUBLE_CLICK_SLOP_PX = 14
 TOUCH_DROP = 0.12              # a touch = a clear DROP below that finger's own
                                # resting distance - a finger that always sits
                                # near the thumb can't fire by existing
+HOLD_DOMINANCE = 0.72          # one finger must be this much closer than the
+                               # other to claim the touch. Relative, not a
+                               # fixed gap: curling to reach the pinky pulls
+                               # the index in too, and a fixed margin handed
+                               # every one of those to the click.
 HOLD_MARGIN = 0.15             # middle must beat index by this to mean HOLD;
                                # ties and near-ties are ALWAYS a click
 PALM_FLICK_GRACE_S = 0.3       # showing the palm (to stop pointing) is inert
@@ -1391,12 +1396,24 @@ class PinchTracker:
                 self.ti_rest is None or ti < self.ti_rest - TOUCH_DROP)
             hold_drop = hold_ok and hold < HOLD_ON and (
                 self.hold_rest is None or hold < self.hold_rest - TOUCH_DROP)
+            # Which finger did the thumb actually go to?
+            #
+            # A fixed margin was the wrong test. Reaching the pinky curls the
+            # index in as well, so BOTH can drop - and every tie went to
+            # click, which is why holding felt impossible even when the pinky
+            # was clearly the target. Compare them RELATIVELY: if the pinky
+            # gap is decisively smaller than the index gap, it is a hold, no
+            # matter that the index came along for the ride.
             k = None
-            if ti_drop and (not hold_drop or ti <= hold + HOLD_MARGIN):
-                k = "click"
+            pinky_wins = hold_drop and hold < ti * HOLD_DOMINANCE
+            index_wins = ti_drop and ti < hold * HOLD_DOMINANCE
+            if pinky_wins and not index_wins:
+                k = "hold"
+            elif ti_drop and not pinky_wins:
+                k = "click"            # ties still favour click: a missed
+                                       # click is worse than a missed drag
             elif hold_drop and hold < ti - HOLD_MARGIN:
-                k = "hold"             # pinky+thumb - far from the index,
-                                       # so the two can never blur together
+                k = "hold"
             if k is None or k != self.kind:
                 self.kind = k
                 self.streak = 1 if k else 0
@@ -1845,7 +1862,7 @@ class Sleyth:
         s = self.stats
         rate = s["arms_no_action"] / mins * 20 if mins > 0.5 else 0.0
         print("\n" + "=" * 62)
-        print("  SLEYTH v8.1 - SESSION REPORT")
+        print("  SLEYTH v8.2 - SESSION REPORT")
         print("=" * 62)
         print(f"  duration            {mins:.1f} min")
         print(f"  arms                {s['arms']}")
@@ -2525,9 +2542,11 @@ class Button:
         self.rect = (0, 0, 0, 0)
         self.hover = False
 
-    def layout(self, x, y, h=48):
-        w = int(sf_w(self.label, 17.0, 0.3) + 56)
+    def layout(self, x, y, h=48, s=1):
+        h = int(h * s)
+        w = int(sf_w(self.label, 17.0 * s, 0.3) + 56 * s)
         self.rect = (int(x), int(y - h / 2), w, h)
+        self.s = s
         return w
 
     def hit(self, mx, my):
@@ -2536,16 +2555,17 @@ class Button:
 
     def draw(self, img, alpha=255):
         x, y, w, h = self.rect
+        s = getattr(self, "s", 1)
         a = alpha if self.enabled else int(alpha * 0.38)
         if self.primary:
             fill = PAPER if not self.hover else (255, 255, 255)
             rounded_rect(img, (x, y), (x + w, y + h), h // 2, mix(fill, a), -1)
-            sf(img, self.label, (x + w / 2, y + h / 2), 17.0, 0.3,
+            sf(img, self.label, (x + w / 2, y + h / 2), 17.0 * s, 0.3,
                (10, 10, 10), a, align="center")
         else:
             rounded_rect(img, (x, y), (x + w, y + h), h // 2,
-                         mix(PAPER, a * (0.42 if self.hover else 0.22)), 2)
-            sf(img, self.label, (x + w / 2, y + h / 2), 17.0, 0.3,
+                         mix(PAPER, a * (0.42 if self.hover else 0.22)), 2 * s)
+            sf(img, self.label, (x + w / 2, y + h / 2), 17.0 * s, 0.3,
                PAPER, int(a * 0.92), align="center")
 
 
@@ -2582,6 +2602,11 @@ class Onboarding:
          "Right goes back, left goes forward - the same way as a trackpad "
          "swipe.", 1),
     ]
+
+    # Everything is drawn at 2x and shown in a 1x window. Rendering at the
+    # window's own size means macOS stretches it across a Retina display -
+    # which is exactly why the whole thing looked like 144p.
+    SS = 2
 
     def __init__(self, ambience=None):
         self.stage = self.WELCOME
@@ -2641,6 +2666,8 @@ class Onboarding:
 
     # ---------------------------------------------------------------- input
     def on_mouse(self, event, x, y, flags, param):
+        # the window is 1x, the canvas is 2x: clicks must be scaled up
+        x, y = x * self.SS, y * self.SS
         self.mouse = (x, y)
         for b in self.buttons:
             b.hover = b.hit(x, y)
@@ -2694,7 +2721,16 @@ class Onboarding:
                 self._go(self.LESSON, now)
 
     # ----------------------------------------------------------------- draw
+    def render(self, app, now, win_w, win_h, obs):
+        """Returns a 2x canvas for a win_w x win_h window."""
+        S = self.SS
+        frame = np.zeros((win_h * S, win_w * S, 3), np.uint8)
+        self.draw(frame, app, now, win_w * S, win_h * S, obs)
+        return frame
+
     def draw(self, frame, app, now, w, h, obs):
+        S = self.SS
+        G = GRID * S
         frame[:] = INK                       # a calm, full-bleed ground
         t = now - self.t0
         fade = ease_out(min(1.0, t / DUR_SLOW))
@@ -2714,29 +2750,33 @@ class Onboarding:
 
         # a quiet way out, always available
         if self.stage != self.WELCOME:
-            sf(frame, "esc to skip", (w - 5 * GRID, h - 4 * GRID), 12.0, 0.0,
+            sf(frame, "esc to skip", (w - 5 * G, h - 4 * G), 12.0 * S, 0.0,
                GREY, int(150 * fade), align="right")
 
     def _welcome(self, frame, now, t, w, h, cx):
+        S = self.SS
+        G = GRID * S
         a = int(255 * ease_out(min(1.0, t / 1.2)))
         draw_serif(frame, "Sleyth",
-                   (cx - serif_w("Sleyth", 2.6, 3) // 2, h // 2 - 10),
-                   2.6, PAPER, 3)
+                   (cx - serif_w("Sleyth", 2.6 * S, 3 * S) // 2, h // 2 - 10),
+                   2.6 * S, PAPER, 3 * S)
         if t > 0.9:
             a2 = int(210 * ease_out(min(1.0, (t - 0.9) / DUR_SLOW)))
             # let the type engine do the letter-spacing; literal spaces get
             # collapsed and the word runs together
-            sf(frame, "A TRACKPAD IN THE AIR", (cx, h // 2 + 6 * GRID), 13.0,
+            sf(frame, "A TRACKPAD IN THE AIR", (cx, h // 2 + 6 * G), 13.0,
                0.2, SILVER, a2, align="center", tracking=4.0)
         if t > 2.2:
             a3 = int(255 * ease_out(min(1.0, (t - 2.2) / DUR_SLOW)))
             b = Button("Begin", "next", primary=True)
-            b.layout(cx - b.layout(0, 0) // 2, h // 2 + 16 * GRID)
+            b.layout(cx - b.layout(0, 0, s=S) // 2, h // 2 + 16 * G, s=S)
             b.hover = b.hit(*self.mouse)
             b.draw(frame, a3)
             self.buttons = [b]
 
     def _message(self, frame, now, fade, w, h, cx):
+        S = self.SS
+        G = GRID * S
         if self.stage == self.PURPOSE:
             title = "Your hand is the trackpad."
             body = ("Sleyth watches your hand through the camera and moves "
@@ -2749,159 +2789,165 @@ class Onboarding:
                     "recorded, nothing is uploaded, and no video is ever "
                     "written to disk. Close the app and it stops looking.")
         a = int(255 * fade)
-        y = h // 2 - 9 * GRID
-        sf(frame, title, (cx, y), 40.0, 0.62, PAPER, a, align="center")
-        maxw = min(int(w * 0.62), 720)
-        for i, line in enumerate(wrap_lines(body, 17.0, 0.0, maxw)):
-            sf(frame, line, (cx, y + 7 * GRID + i * 4 * GRID), 17.0, 0.0,
+        y = h // 2 - 9 * G
+        sf(frame, title, (cx, y), 40.0 * S, 0.62, PAPER, a, align="center")
+        maxw = min(int(w * 0.62), 720 * S)
+        for i, line in enumerate(wrap_lines(body, 17.0 * S, 0.0, maxw)):
+            sf(frame, line, (cx, y + 7 * G + i * 4 * G), 17.0 * S, 0.0,
                SILVER, int(a * 0.92), align="center")
         b = Button("Continue", "next", primary=True)
-        bw = b.layout(0, 0)
-        b.layout(cx - bw // 2, h // 2 + 16 * GRID)
+        bw = b.layout(0, 0, s=S)
+        b.layout(cx - bw // 2, h // 2 + 16 * G, s=S)
         b.hover = b.hit(*self.mouse)
         b.draw(frame, a)
         self.buttons = [b]
 
     def _ask(self, frame, fade, w, h, cx):
+        S = self.SS
+        G = GRID * S
         a = int(255 * fade)
-        y = h // 2 - 8 * GRID
+        y = h // 2 - 8 * G
         sf(frame, "Would you like a guided tour?", (cx, y), 40.0, 0.62,
            PAPER, a, align="center")
         sf(frame, "Six gestures, at your own pace. You press Next - nothing "
-           "moves on without you.", (cx, y + 7 * GRID), 17.0, 0.0, SILVER,
+           "moves on without you.", (cx, y + 7 * G), 17.0 * S, 0.0, SILVER,
            int(a * 0.92), align="center")
         yes = Button("Show me how", "tutorial", primary=True)
         no = Button("I'll explore myself", "notutorial")
-        wy, wn = yes.layout(0, 0), no.layout(0, 0)
-        total = wy + 2 * GRID + wn
-        yes.layout(cx - total // 2, h // 2 + 14 * GRID)
-        no.layout(cx - total // 2 + wy + 2 * GRID, h // 2 + 14 * GRID)
+        wy, wn = yes.layout(0, 0, s=S), no.layout(0, 0, s=S)
+        total = wy + 2 * G + wn
+        yes.layout(cx - total // 2, h // 2 + 14 * G, s=S)
+        no.layout(cx - total // 2 + wy + 2 * G, h // 2 + 14 * G, s=S)
         for b in (yes, no):
             b.hover = b.hit(*self.mouse)
             b.draw(frame, a)
         self.buttons = [yes, no]
 
     def _lesson(self, frame, app, now, fade, w, h, obs):
+        S = self.SS
+        G = GRID * S
         kind, title, how, why, reps = self.lesson()
         a = int(255 * fade)
-        pad = 7 * GRID
+        pad = 7 * G
 
         # --- the gesture, playing on loop, on its own card
-        card = min(int(h * 0.62), 380)
+        card = min(int(h * 0.62), 380 * S)
         cy = h // 2
         rounded_rect(frame, (pad, cy - card // 2), (pad + card, cy + card // 2),
-                     3 * GRID, RAISED, -1)
+                     3 * G, RAISED, -1)
         rounded_rect(frame, (pad, cy - card // 2), (pad + card, cy + card // 2),
-                     3 * GRID, HAIR, 1)
+                     3 * G, HAIR, 1)
         draw_gesture_anim(frame, pad + card // 8, cy - card // 2 + card // 8,
                           int(card * 0.75), kind,
                           now - self._replay_from)
 
         # --- the words, as one optically centred block against the card
-        tx = pad + card + 6 * GRID
+        tx = pad + card + 6 * G
         maxw = w - tx - pad
-        how_lines = wrap_lines(how, 18.0, 0.1, maxw)
-        why_lines = wrap_lines(why, 15.0, 0.0, maxw)
-        block = (5 * GRID + 6 * GRID + len(how_lines) * 4 * GRID
-                 + GRID + len(why_lines) * 3 * GRID)
-        yy = cy - card // 2 + max(2 * GRID,
-                                  (card - 16 * GRID - block) // 2)
+        how_lines = wrap_lines(how, 18.0 * S, 0.1, maxw)
+        why_lines = wrap_lines(why, 15.0 * S, 0.0, maxw)
+        block = (5 * G + 6 * G + len(how_lines) * 4 * G
+                 + G + len(why_lines) * 3 * G)
+        yy = cy - card // 2 + max(2 * G,
+                                  (card - 16 * G - block) // 2)
 
         # step dots read faster than "3 of 6", and only one of them is needed
         for i in range(len(self.LESSONS)):
             filled = i < self.idx or (i == self.idx and self.done_here())
             cur = i == self.idx
-            cv2.circle(frame, (tx + 4 + i * 18, yy), 4 if not cur else 5,
+            cv2.circle(frame, (tx + 4 * S + i * 18 * S, yy), (4 if not cur else 5) * S,
                        PAPER if filled or cur else HAIR,
                        -1 if filled else 1, cv2.LINE_AA)
-        yy += 5 * GRID
+        yy += 5 * G
 
-        sf(frame, title, (tx, yy), 34.0, 0.62, PAPER, a)
-        yy += 6 * GRID
+        sf(frame, title, (tx, yy), 34.0 * S, 0.62, PAPER, a)
+        yy += 6 * G
         for line in how_lines:
-            sf(frame, line, (tx, yy), 18.0, 0.1, PAPER, a)
-            yy += 4 * GRID
-        yy += GRID
+            sf(frame, line, (tx, yy), 18.0 * S, 0.1, PAPER, a)
+            yy += 4 * G
+        yy += G
         for line in why_lines:
-            sf(frame, line, (tx, yy), 15.0, 0.0, GREY, a)
-            yy += 3 * GRID
+            sf(frame, line, (tx, yy), 15.0 * S, 0.0, GREY, a)
+            yy += 3 * G
 
         # --- THE thing that was missing: gestures do nothing until Sleyth is
         # awake. Practising scroll at a sleeping app just silently fails.
         awake = app.state == Sleyth.ARMED
         seen = obs is not None
         done = self.done_here()
-        wy = cy + card // 2 - 15 * GRID
+        wy = cy + card // 2 - 15 * G
         if not awake and self.idx > 0:
             msg = "Asleep - hold an open palm still to wake it"
-            cw = int(sf_w(msg, 14.0, 0.3)) + 9 * GRID
-            rounded_rect(frame, (tx, wy - 3 * GRID), (tx + cw, wy + 3 * GRID),
-                         3 * GRID, RAISED, -1)
-            rounded_rect(frame, (tx, wy - 3 * GRID), (tx + cw, wy + 3 * GRID),
-                         3 * GRID, HAIR, 1)
+            cw = int(sf_w(msg, 14.0 * S, 0.3)) + 9 * G
+            rounded_rect(frame, (tx, wy - 3 * G), (tx + cw, wy + 3 * G),
+                         3 * G, RAISED, -1)
+            rounded_rect(frame, (tx, wy - 3 * G), (tx + cw, wy + 3 * G),
+                         3 * G, HAIR, 1)
             prog = app.gate.hold_progress
-            r = 9
-            cv2.circle(frame, (tx + 3 * GRID, wy), r, HAIR, 2, cv2.LINE_AA)
+            r = 9 * S
+            cv2.circle(frame, (tx + 3 * G, wy), r, HAIR, 2 * S, cv2.LINE_AA)
             if prog > 0:
-                cv2.ellipse(frame, (tx + 3 * GRID, wy), (r, r), -90, 0,
-                            int(360 * prog), PAPER, 2, cv2.LINE_AA)
-            sf(frame, msg, (tx + 5 * GRID + 4, wy), 14.0, 0.3, PAPER, a)
+                cv2.ellipse(frame, (tx + 3 * G, wy), (r, r), -90, 0,
+                            int(360 * prog), PAPER, 2 * S, cv2.LINE_AA)
+            sf(frame, msg, (tx + 5 * G + 4 * S, wy), 14.0 * S, 0.3, PAPER, a)
         elif awake:
-            cv2.circle(frame, (tx + 4, wy), 4, PAPER, -1, cv2.LINE_AA)
-            sf(frame, "Awake - it can see you", (tx + 3 * GRID, wy), 14.0,
+            cv2.circle(frame, (tx + 4 * S, wy), 4 * S, PAPER, -1, cv2.LINE_AA)
+            sf(frame, "Awake - it can see you", (tx + 3 * G, wy), 14.0 * S,
                0.3, SILVER, int(a * 0.85))
 
         # --- live feedback: is it actually seeing you?
-        fy = cy + card // 2 - 9 * GRID
+        fy = cy + card // 2 - 9 * G
         if done:
-            cv2.circle(frame, (tx + 7, fy - 5), 7, PAPER, -1, cv2.LINE_AA)
-            sf(frame, "Got it - you can move on.", (tx + 3 * GRID, fy), 15.0,
+            cv2.circle(frame, (tx + 7 * S, fy - 5 * S), 7 * S, PAPER, -1, cv2.LINE_AA)
+            sf(frame, "Got it - you can move on.", (tx + 3 * G, fy), 15.0 * S,
                0.3, PAPER, a)
         elif reps > 1:
             sf(frame, f"{min(self.count, reps)} of {reps}",
-               (tx, fy), 15.0, 0.3, SILVER, a)
-            bw = 200
-            bx = tx + 9 * GRID
-            cv2.line(frame, (bx, fy - 4), (bx + bw, fy - 4), HAIR, 3,
+               (tx, fy), 15.0 * S, 0.3, SILVER, a)
+            bw = 200 * S
+            bx = tx + 9 * G
+            cv2.line(frame, (bx, fy - 4 * S), (bx + bw, fy - 4 * S), HAIR, 3 * S,
                      cv2.LINE_AA)
             if self.count:
-                cv2.line(frame, (bx, fy - 4),
-                         (bx + int(bw * min(1.0, self.count / reps)), fy - 4),
-                         PAPER, 3, cv2.LINE_AA)
+                cv2.line(frame, (bx, fy - 4 * S),
+                         (bx + int(bw * min(1.0, self.count / reps)), fy - 4 * S),
+                         PAPER, 3 * S, cv2.LINE_AA)
         else:
             sf(frame, "hand visible" if seen else "hold your hand up, well lit",
-               (tx, fy), 15.0, 0.0, SILVER if seen else GREY, a)
+               (tx, fy), 15.0 * S, 0.0, SILVER if seen else GREY, a)
 
         # --- controls: the user decides when to move on
-        by = cy + card // 2 - 2 * GRID
+        by = cy + card // 2 - 2 * G
         back = Button("Back", "back", enabled=self.idx > 0)
         again = Button("Show again", "again")
         nxt = Button("Next" if self.idx + 1 < len(self.LESSONS) else "Finish",
                      "next", primary=True)
-        wb, wa = back.layout(0, 0), again.layout(0, 0)
-        back.layout(tx, by)
-        again.layout(tx + wb + 1 * GRID, by)
-        nxt.layout(tx + wb + wa + 3 * GRID, by)
+        wb, wa = back.layout(0, 0, s=S), again.layout(0, 0, s=S)
+        back.layout(tx, by, s=S)
+        again.layout(tx + wb + 1 * G, by, s=S)
+        nxt.layout(tx + wb + wa + 3 * G, by, s=S)
         for b in (back, again, nxt):
             b.hover = b.hit(*self.mouse)
             b.draw(frame, a)
         self.buttons = [back, again, nxt]
 
     def _done(self, frame, fade, w, h, cx):
+        S = self.SS
+        G = GRID * S
         a = int(255 * fade)
-        y = h // 2 - 8 * GRID
-        sf(frame, "You're ready.", (cx, y), 44.0, 0.62, PAPER, a,
+        y = h // 2 - 8 * G
+        sf(frame, "You're ready.", (cx, y), 44.0 * S, 0.62, PAPER, a,
            align="center")
         body = ("Raise an open palm to begin, any time. Sleyth waits as a "
                 "small circle at the bottom of your screen and opens when "
                 "it sees your hand.")
-        for i, line in enumerate(wrap_lines(body, 17.0, 0.0,
-                                           min(int(w * 0.6), 700))):
-            sf(frame, line, (cx, y + 7 * GRID + i * 4 * GRID), 17.0, 0.0,
+        for i, line in enumerate(wrap_lines(body, 17.0 * S, 0.0,
+                                           min(int(w * 0.6), 700 * S))):
+            sf(frame, line, (cx, y + 7 * G + i * 4 * G), 17.0 * S, 0.0,
                SILVER, int(a * 0.92), align="center")
         b = Button("Start using Sleyth", "next", primary=True)
-        bw = b.layout(0, 0)
-        b.layout(cx - bw // 2, h // 2 + 14 * GRID)
+        bw = b.layout(0, 0, s=S)
+        b.layout(cx - bw // 2, h // 2 + 14 * G, s=S)
         b.hover = b.hit(*self.mouse)
         b.draw(frame, a)
         self.buttons = [b]
@@ -3044,12 +3090,15 @@ def draw_clip(img, x, y, size, clip, now, color=PAPER):
         cv2.circle(img, pts[tip], th + 2, color, -1, cv2.LINE_AA)
 
 
-def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2):
+def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2,
+                squash=1.0):
     """A schematic hand: palm + finger capsules. `fingers` is 4 tuples of
     (extension 0..1, x-spread), thumb an (angle_deg, extension) or None.
+    `squash` narrows the palm so the hand can appear to rotate edge-on.
     Iconic on purpose - it must read as A HAND at a glance, in any language."""
     palm_cy = int(cy + 0.22 * s)
-    cv2.ellipse(img, (int(cx), palm_cy), (int(0.30 * s), int(0.34 * s)),
+    cv2.ellipse(img, (int(cx), palm_cy),
+                (max(1, int(0.30 * s * squash)), int(0.34 * s)),
                 0, 0, 360, color, thick, cv2.LINE_AA)
     top_y = palm_cy - int(0.30 * s)
     for (ext, sx) in fingers:
@@ -3160,6 +3209,26 @@ def draw_gesture_anim(img, x, y, size, kind, now, color=PAPER):
         wob = int(2 * math.sin(4 * math.pi * t))
         _hand_glyph(img, cx + wob, cy, s, CURLED, thumb=(50, 0.15),
                     color=color)
+    elif kind == "turn":
+        # An open hand ROTATING to show its back - the calibration step used
+        # the fist glyph, which told the user to make a fist. It squashes
+        # horizontally through the turn, then the thumb reappears on the
+        # other side, which is what turning a hand over actually looks like.
+        ph = (math.cos(2 * math.pi * t) + 1) / 2       # 1 -> 0 -> 1
+        squash = max(0.12, ph)
+        back = ph < 0.5 or t > 0.5
+        fingers = [(1.0, sx * squash) for (_e, sx) in SPREAD]
+        if t > 0.5:                                    # back of the hand
+            fingers = [(1.0, -sx * squash) for (_e, sx) in SPREAD]
+        _hand_glyph(img, cx, cy, s, fingers,
+                    thumb=(20, 1.0 * squash) if squash > 0.35 else None,
+                    color=color, squash=squash)
+        aw = int(0.42 * s)
+        cv2.ellipse(img, (int(cx), int(cy + 0.62 * s)), (aw, int(0.12 * s)),
+                    0, 200, 340, color, 1, cv2.LINE_AA)
+        tip = (int(cx + aw * math.cos(math.radians(340))),
+               int(cy + 0.62 * s + 0.12 * s * math.sin(math.radians(340))))
+        cv2.circle(img, tip, 3, color, -1, cv2.LINE_AA)
     else:                                       # "free": loose wiggle
         fingers = [(0.4 + 0.25 * math.sin(2 * math.pi * t + i), sx)
                    for i, (_e, sx) in enumerate(SPREAD)]
@@ -3369,7 +3438,7 @@ def run_calibration(cap, engine, cfg, aspect):
     phases = [("Show your palm", "Open your hand and face your palm at the "
                "camera. Hold it there.", "palm", 5.0),
               ("Now the back of your hand", "Turn your hand over, keeping it "
-               "open, and hold it there.", "fist", 5.0)]
+               "open, and hold it there.", "turn", 5.0)]
     means, labels = [], []
     W, H = 1100, 700
     for phase_idx, (title, how, anim, seconds) in enumerate(phases):
@@ -3808,9 +3877,9 @@ def main():
                 cv2.circle(frame, (cx_, cy_), 8, PAPER, -1, cv2.LINE_AA)
                 cv2.circle(frame, (cx_, cy_), 9, (0, 0, 0), 1, cv2.LINE_AA)
             if tutorial is not None:
-                # onboarding owns the whole screen: a diagnostic HUD behind
-                # a welcome screen is not a first impression
-                tutorial.draw(frame, app, now, w, h, obs)
+                # onboarding owns the whole screen, drawn at 2x so a Retina
+                # display shows real pixels instead of a stretched 1x image
+                frame = tutorial.render(app, now, 1100, 700, obs)
             else:
                 draw_guide(frame, active, now, w, h)
                 draw_hud(frame, app, toast, now, w, h)

@@ -1417,5 +1417,55 @@ for _ in range(40):
 assert ob4.count == 1, f"one continuous swipe must be one wave: {ob4.count}"
 print("31. onboarding: user-paced, reps counted, never self-advances OK")
 
+# ---- 32. holding must survive the index tagging along
+# Reaching the thumb to the pinky curls the index in too. A fixed margin
+# handed every one of those to the click, so holding felt impossible.
+pk = m.PinchTracker()
+
+
+def _touch(ti, hold):
+    """One frame with explicit thumb-index / thumb-pinky ratios."""
+    return {"ti_ratio": ti, "hold_ratio": hold, "click_ok": True,
+            "hold_ok": True, "touch_ok": True, "pose": "point"}
+
+
+def _drive_touch(tr, ti, hold, frames=4, t0=BASE, rest=(2.6, 2.6)):
+    tr.ti_rest, tr.hold_rest = rest
+    out = []
+    tt = t0
+    for _ in range(frames):
+        out += tr.update(_touch(ti, hold), tt, allow_start=True)
+        tt += DT
+    return out
+
+# the pinky is clearly the target, but the index came along (0.30 vs 0.12)
+pk = m.PinchTracker()
+evs = _drive_touch(pk, 0.30, 0.12)
+assert "down" in evs, f"pinky-dominant touch should HOLD (down), got {evs}"
+assert pk.state == m.PinchTracker.DRAG, "tracker should be in DRAG"
+
+# a clean click: index tiny, pinky far
+pk2 = m.PinchTracker()
+evs2 = _drive_touch(pk2, 0.05, 0.60)
+assert "tap" in evs2, f"index touch should CLICK (tap), got {evs2}"
+
+# genuinely ambiguous (both similar) still favours the click - a missed
+# click is worse than a missed drag
+pk3 = m.PinchTracker()
+evs3 = _drive_touch(pk3, 0.20, 0.19)
+assert "tap" in evs3, f"a tie should click (tap), got {evs3}"
+
+# and a fist must still do nothing at all
+of2 = obs("fist")
+assert of2["pose"] == "fist"
+pk4 = m.PinchTracker()
+evs4 = []
+t = BASE
+for _ in range(6):
+    evs4 += pk4.update(of2, t, allow_start=False)   # fist can't latch pointing
+    t += DT
+assert not evs4, f"a fist must stay inert, got {evs4}"
+print("32. hold wins when the pinky is the target, click still wins ties OK")
+
 print()
-print("ALL SLEYTH v8.1 TESTS PASSED")
+print("ALL SLEYTH v8.2 TESTS PASSED")
