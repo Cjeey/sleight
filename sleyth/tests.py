@@ -1318,5 +1318,40 @@ for _ in range(120):
 assert r[0] > 0.98, f"precision assist blocked the screen edge: {r[0]:.3f}"
 print("29. precision assist: fine when slow, 1:1 when fast, edges reachable OK")
 
+# ---- 30. recorded gesture clips: normalize, resample, replay, fallback
+# a fake 21-point hand drifting across the frame
+_raw_clip = [[(0.2 + 0.02 * i + 0.01 * j, 0.3 + 0.005 * j)
+              for j in range(21)] for i in range(20)]
+_norm = m.normalize_clip(_raw_clip)
+_all_x = [p[0] for f in _norm for p in f]
+_all_y = [p[1] for f in _norm for p in f]
+assert 0.0 <= min(_all_x) and max(_all_x) <= 1.0, "clip must fit the unit box"
+assert 0.0 <= min(_all_y) and max(_all_y) <= 1.0
+# the hand's TRAVEL survives normalization (per-frame fitting would kill it)
+_c0 = sum(p[0] for p in _norm[0]) / 21
+_c1 = sum(p[0] for p in _norm[-1]) / 21
+assert _c1 - _c0 > 0.1, "sequence normalization erased the hand's motion"
+
+_rs = m.resample_clip(_norm, 54)
+assert len(_rs) == 54 and all(len(f) == 21 for f in _rs)
+assert m.resample_clip([], 54) == []
+_one = m.resample_clip([_norm[0]], 54)
+assert len(_one) == 54, "single-frame clip should still fill the loop"
+
+# replay draws the skeleton; a kind with no clip falls back to the glyph
+_img = _np.zeros((160, 160, 3), dtype=_np.uint8)
+m.draw_clip(_img, 10, 10, 140, _rs, now=BASE)
+assert (_img > 0).sum() > 200, "replay drew nothing"
+m._CLIPS["click"] = _rs                     # simulate a recorded click
+_img2 = _np.zeros((160, 160, 3), dtype=_np.uint8)
+m.draw_gesture_anim(_img2, 10, 10, 140, "click", BASE)
+assert (_img2 > 0).sum() > 200, "recorded clip did not replay in the anim"
+m._CLIPS["click"] = None                    # and without one, the glyph draws
+_img3 = _np.zeros((160, 160, 3), dtype=_np.uint8)
+m.draw_gesture_anim(_img3, 10, 10, 140, "click", BASE)
+assert (_img3 > 0).sum() > 200, "fallback glyph vanished"
+del m._CLIPS["click"]
+print("30. gesture clips: normalized, resampled, replayed, safe fallback OK")
+
 print()
-print("ALL SLEYTH v7.9 TESTS PASSED")
+print("ALL SLEYTH v8.0 TESTS PASSED")

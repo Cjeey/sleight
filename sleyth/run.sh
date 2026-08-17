@@ -23,4 +23,9 @@ if [ "$1" = "--train" ]; then
   exec "$VENV/bin/python" train_gestures.py
 fi
 
+if [ "$1" = "--record" ]; then
+  shift
+  exec "$VENV/bin/python" record_gesture.py "$@"
+fi
+
 exec "$VENV/bin/python" sleyth.py "$@"

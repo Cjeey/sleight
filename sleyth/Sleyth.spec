@@ -11,6 +11,9 @@ from PyInstaller.utils.hooks import collect_all
 # .so alone gives an app that builds cleanly and then cannot import it.
 mp_datas, mp_binaries, mp_hidden = collect_all("mediapipe")
 datas = mp_datas + [("hand_landmarker.task", ".")]
+import os as _os
+if _os.path.isdir("gestures"):          # recorded tutorial clips, if any
+    datas += [("gestures", "gestures")]
 binaries = mp_binaries
 
 a = Analysis(
@@ -59,8 +62,8 @@ app = BUNDLE(
             "leaves your Mac and is never recorded.",
         "NSMicrophoneUsageDescription": "Not used.",
         "LSMinimumSystemVersion": "12.0",
-        "CFBundleShortVersionString": "7.9",
-        "CFBundleVersion": "7.9",
+        "CFBundleShortVersionString": "8.0",
+        "CFBundleVersion": "8.0",
         "LSApplicationCategoryType": "public.app-category.utilities",
         # accessory: no Dock icon, the widget and menu bar ARE the app
         "LSUIElement": True,

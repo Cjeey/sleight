@@ -1,5 +1,5 @@
 """
-Sleyth v7.9 - trackpad in the air.
+Sleyth v8.0 - trackpad in the air.
 
 Gestures (after summoning):
 
@@ -1612,7 +1612,7 @@ class Sleyth:
         s = self.stats
         rate = s["arms_no_action"] / mins * 20 if mins > 0.5 else 0.0
         print("\n" + "=" * 62)
-        print("  SLEYTH v7.9 - SESSION REPORT")
+        print("  SLEYTH v8.0 - SESSION REPORT")
         print("=" * 62)
         print(f"  duration            {mins:.1f} min")
         print(f"  arms                {s['arms']}")
@@ -1851,6 +1851,13 @@ def ease(x):
     return x * x * (3.0 - 2.0 * x)
 
 
+def ease_out(x):
+    """Fast start, gentle landing (Apple's entrance curve, ~cubic-bezier
+    (0,0,.2,1)). Entrances use this; it reads as responsiveness."""
+    x = max(0.0, min(1.0, x))
+    return 1.0 - (1.0 - x) ** 3
+
+
 class PillUI:
     """The widget's own animation state: how open it is, and which word it is
     in the middle of becoming."""
@@ -1872,7 +1879,18 @@ class PillUI:
 
     def morph(self, now):
         """0 -> 1 across a word change; 1 means settled."""
+        if _STILL[0]:                  # Reduce Motion: words swap, not slide
+            return 1.0
         return min(1.0, (now - self.morph_t) / MORPH_S) if self.word else 1.0
+
+    def morph_out(self, now):
+        """The OLD word leaves FASTER than the new one arrives (~65%) - Apple
+        and Material both do this; a slow exit reads as lag."""
+        if _STILL[0]:
+            return 1.0
+        if not self.word:
+            return 1.0
+        return min(1.0, (now - self.morph_t) / (MORPH_S * 0.65))
 
 
 def _rgba(color, alpha):
@@ -1925,7 +1943,9 @@ def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2):
         word = summon_hint(app.gate, obs) or "READY"
     else:
         word = ""
-    op = ease(ui.update(1.0 if seen else 0.0, word, now))
+    # ease-out on the way OPEN (entrance = responsive), smooth both ways shut
+    raw_op = ui.update(1.0 if seen else 0.0, word, now)
+    op = ease_out(raw_op) if seen else ease(raw_op)
 
     # the capsule is as wide as the WORD needs - "CENTER HAND" must not spill
     # out of a capsule sized for "CLICK"
@@ -2004,10 +2024,13 @@ def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2):
                 return
             blit_text(c, tb, tx, int(cy * S - tb.shape[0] / 2 + dy), a, PAPER)
 
-        if ui.prev and p < 1.0:
-            _word(ui.prev, -10 * S * p, 255 * (1 - p) * gate_a)
+        p_out = ui.morph_out(now)
+        if ui.prev and p_out < 1.0:
+            _word(ui.prev, -10 * S * ease_out(p_out),
+                  255 * (1 - p_out) * gate_a)
         if ui.word:
-            _word(ui.word, 10 * S * (1 - p), 255 * p * gate_a)
+            pe = ease_out(p)
+            _word(ui.word, 10 * S * (1 - pe), 255 * p * gate_a)
 
     # ---- the hand, on its own frosted chip beside the capsule
     chip_rect = None
@@ -2069,10 +2092,10 @@ def render_panel(app, obs, active, toast, now, thumb=None, lms=None):
                  PAPER if (armed or toast) else HAIR, S)
 
     # -- the living blob: breathes with the hand, glows when armed
-    e = _pill_energy(obs, now)
+    e = 0.0 if _STILL[0] else _pill_energy(obs, now)   # Reduce Motion: calm
     bx_c = x0 + 46 * S
     if armed:
-        glow = 226 + int(20 * math.sin(now * 2.4))
+        glow = 226 if _STILL[0] else 226 + int(20 * math.sin(now * 2.4))
         draw_blob(c, (bx_c, cy), 15 * S, e, now, (glow, glow, glow))
     elif seen:
         draw_blob(c, (bx_c, cy), 12 * S, min(0.5, e), now, SILVER)
@@ -2150,6 +2173,95 @@ def render_panel(app, obs, active, toast, now, thumb=None, lms=None):
 
 # --------------------------------------------------------------------------- tutorial
 
+# Recorded gesture clips: YOUR real hand, captured once as landmark frames
+# (21 x/y points per frame, a few KB) and replayed as the monochrome
+# skeleton. Real human motion, no video files, perfectly on-brand. The
+# procedural glyphs below stay as the fallback for any gesture without a
+# recording.
+CLIP_LOOP_S = 1.8                 # replay loop, matches the drawn anims
+CLIP_FRAMES = 54                  # 1.8s at 30fps
+_CLIPS = {}                       # kind -> list[frame] | None (miss cached)
+
+
+def clip_dirs():
+    return [os.path.join(SUPPORT, "gestures"), os.path.join(HERE, "gestures")]
+
+
+def normalize_clip(frames, margin=0.10):
+    """Fit the WHOLE sequence into the unit box with one uniform transform.
+    Per-frame fitting would delete the very thing being taught - the hand's
+    own travel across the frame."""
+    xs = [p[0] for f in frames for p in f]
+    ys = [p[1] for f in frames for p in f]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    span = max(x1 - x0, y1 - y0) or 1.0
+    sc = (1.0 - 2 * margin) / span
+    ox = margin + (1.0 - 2 * margin - (x1 - x0) * sc) / 2 - x0 * sc
+    oy = margin + (1.0 - 2 * margin - (y1 - y0) * sc) / 2 - y0 * sc
+    return [[(p[0] * sc + ox, p[1] * sc + oy) for p in f] for f in frames]
+
+
+def resample_clip(frames, n=CLIP_FRAMES):
+    """Linear time-resample to a fixed frame count, so every clip loops at
+    the same rhythm regardless of how fast it was performed."""
+    if len(frames) < 2:
+        return list(frames) * n if frames else []
+    out = []
+    for i in range(n):
+        u = i * (len(frames) - 1) / (n - 1)
+        a = min(int(u), len(frames) - 2)
+        w = u - a
+        out.append([(p0[0] * (1 - w) + p1[0] * w,
+                     p0[1] * (1 - w) + p1[1] * w)
+                    for p0, p1 in zip(frames[a], frames[a + 1])])
+    return out
+
+
+def load_clip(kind):
+    if kind in _CLIPS:
+        return _CLIPS[kind]
+    clip = None
+    for d in clip_dirs():
+        path = os.path.join(d, f"{kind}.json")
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            frames = data.get("frames", [])
+            if len(frames) >= 8 and all(len(fr) == 21 for fr in frames):
+                clip = frames
+                break
+        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+            continue
+    _CLIPS[kind] = clip
+    return clip
+
+
+def save_clip(kind, frames):
+    d = clip_dirs()[0]
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{kind}.json")
+    with open(path, "w") as f:
+        json.dump({"frames": [[(round(x, 4), round(y, 4)) for x, y in fr]
+                              for fr in frames]}, f)
+    _CLIPS[kind] = frames
+    return path
+
+
+def draw_clip(img, x, y, size, clip, now, color=PAPER):
+    """Replay a recorded hand inside the chip - same skeleton style as the
+    live hand map, so 'yours should look like this' is literal."""
+    u = (now % CLIP_LOOP_S) / CLIP_LOOP_S * (len(clip) - 1)
+    a = min(int(u), len(clip) - 2)
+    w = u - a
+    pts = [(int(x + (p0[0] * (1 - w) + p1[0] * w) * size),
+            int(y + (p0[1] * (1 - w) + p1[1] * w) * size))
+           for p0, p1 in zip(clip[a], clip[a + 1])]
+    for i, j in mp.solutions.hands.HAND_CONNECTIONS:
+        cv2.line(img, pts[i], pts[j], color, 1, cv2.LINE_AA)
+    for tip in (4, 8, 12, 16, 20):
+        cv2.circle(img, pts[tip], 3, color, -1, cv2.LINE_AA)
+
+
 def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2):
     """A schematic hand: palm + finger capsules. `fingers` is 4 tuples of
     (extension 0..1, x-spread), thumb an (angle_deg, extension) or None.
@@ -2178,8 +2290,13 @@ def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2):
 
 
 def draw_gesture_anim(img, x, y, size, kind, now, color=PAPER):
-    """One gesture, performed on loop by the schematic hand. This is how the
-    tutorial teaches without language: you watch the hand DO it."""
+    """One gesture, performed on loop. A RECORDED clip of a real hand plays
+    if one exists; otherwise the schematic hand acts it out. Either way the
+    lesson needs no language: you watch the hand DO it."""
+    clip = load_clip(kind)
+    if clip:
+        draw_clip(img, x, y, size, clip, now, color)
+        return
     t = (now % 1.8) / 1.8                       # one loop = 1.8s
     cx, cy = x + size // 2, y + size // 2
     s = size * 0.62
@@ -2342,10 +2459,10 @@ class Tutorial:
         kind, title, instr, reps = self.STEPS[self.idx]
 
         # the animated hand, on its own chip - the lesson itself
-        ax, ay, asz = 24, h - SH + 14, SH - 28
-        rounded_rect(frame, (ax, ay), (ax + asz + 24, ay + asz), 12,
+        ax, ay, asz = 24, h - SH + 16, SH - 32
+        rounded_rect(frame, (ax, ay), (ax + asz + 24, ay + asz), 16,
                      RAISED, -1)
-        rounded_rect(frame, (ax, ay), (ax + asz + 24, ay + asz), 12, HAIR, 1)
+        rounded_rect(frame, (ax, ay), (ax + asz + 24, ay + asz), 16, HAIR, 1)
         draw_gesture_anim(frame, ax + 12, ay, asz, kind, now)
 
         tx = ax + asz + 52
@@ -2356,7 +2473,7 @@ class Tutorial:
         # progress: dots for countable reps, a line for the movement step
         if reps <= 5:
             for i in range(reps):
-                p = (tx + 8 + i * 30, h - SH + 118)
+                p = (tx + 8 + i * 32, h - SH + 120)
                 if i < self.count:
                     cv2.circle(frame, p, 7, PAPER, -1, cv2.LINE_AA)
                 else:
