@@ -327,9 +327,25 @@ class GlassPill:
         except Exception:
             pass
 
+    def clamp_origin(self, x, y):
+        """Keep the widget inside the USABLE screen - visibleFrame excludes
+        the Dock and the menu bar. Restoring a saved position blindly is how
+        the widget ended up drawing itself behind the Dock, invisible, while
+        the app looked completely dead."""
+        try:
+            vf = NSScreen.mainScreen().visibleFrame()
+        except Exception:
+            return float(x), float(y)
+        lo_x = vf.origin.x
+        hi_x = vf.origin.x + vf.size.width - self.win_w
+        lo_y = vf.origin.y
+        hi_y = vf.origin.y + vf.size.height - self.win_h
+        return (float(min(max(x, lo_x), max(lo_x, hi_x))),
+                float(min(max(y, lo_y), max(lo_y, hi_y))))
+
     def set_origin(self, x, y):
         if self.ok:
-            self.win.setFrameOrigin_((float(x), float(y)))
+            self.win.setFrameOrigin_(self.clamp_origin(x, y))
 
     def origin(self):
         if not self.ok:
@@ -341,10 +357,14 @@ class GlassPill:
         """pos: 'center' or 'right' along the bottom of the screen."""
         if not self.ok:
             return
-        f = self.win.frame()
+        try:
+            vf = NSScreen.mainScreen().visibleFrame()
+            base_y = vf.origin.y + 12          # just above the Dock
+        except Exception:
+            base_y = self.win.frame().origin.y
         x = ((self.screen_w - self.win_w) / 2 if pos == "center"
              else self.screen_w - self.win_w - 8)
-        self.win.setFrameOrigin_((x, f.origin.y))
+        self.win.setFrameOrigin_(self.clamp_origin(x, base_y))
 
     def set_chip(self, rect):
         """The hand's own frosted panel. Pass None to hide it."""

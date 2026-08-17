@@ -364,6 +364,74 @@ DEFAULT_CONFIG = {
 }
 
 
+_RUNLOG = [None]
+
+
+def runlog(msg):
+    """Write a launch trace to a fixed file. When someone says 'nothing
+    happens', this is the difference between guessing and knowing."""
+    line = f"{datetime.now().strftime('%H:%M:%S')}  {msg}"
+    print(line)
+    try:
+        if _RUNLOG[0] is None:
+            _RUNLOG[0] = os.path.join(SUPPORT, "last_run.log")
+            with open(_RUNLOG[0], "w") as f:
+                f.write(f"Sleyth v{VERSION} {'packaged' if FROZEN else 'source'}"
+                        f"  {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+        with open(_RUNLOG[0], "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def fatal(msg, title="Sleyth"):
+    """Die visibly. A packaged .app has no console, so sys.exit(text) is the
+    same as vanishing without a word - which is exactly how this app used to
+    'fail' for anyone who wasn't running it from a terminal."""
+    print(msg)
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display dialog {json.dumps(msg)} with title "{title}" '
+             f'buttons {{"OK"}} default button 1 with icon caution'],
+            timeout=120, check=False)
+    except Exception:
+        pass
+    sys.exit(1)
+
+
+def open_camera(timeout_s=90, on_wait=None):
+    """Open the webcam, surviving the permission prompt.
+
+    macOS shows that prompt ASYNCHRONOUSLY: the first open always fails
+    while the dialog is still on screen. Quitting on that first failure is
+    why Sleyth used to ask for permission and then disappear. So we keep
+    retrying until the user answers - and `on_wait` keeps the widget alive
+    and animating meanwhile, so the app never looks dead."""
+    cam = LatestFrameCamera(CAM_INDEX, CAM_W, CAM_H)
+    if cam.isOpened():
+        return cam
+    print("Waiting for camera permission...")
+    deadline = time.time() + timeout_s
+    last_try = 0.0
+    while time.time() < deadline:
+        if on_wait is not None:
+            on_wait()               # paint the widget ~30fps while we wait
+        time.sleep(0.03)
+        if time.time() - last_try < 1.5:
+            continue
+        last_try = time.time()
+        try:
+            cam.release()
+        except Exception:
+            pass
+        cam = LatestFrameCamera(CAM_INDEX, CAM_W, CAM_H)
+        if cam.isOpened():
+            print("Camera granted.")
+            return cam
+    return cam                      # caller reports it, visibly
+
+
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
     paths = [CONFIG_PATH,
@@ -1951,7 +2019,40 @@ def blit_text(canvas, tb, x, y, alpha=255, tint=PAPER):
     return tw
 
 
-def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2):
+def render_boot_rgba(word, now, scale=2):
+    """The widget BEFORE the camera exists. Sleyth used to show nothing at
+    all while waiting for the camera prompt - up to a minute of a running
+    app with no window anywhere, which is indistinguishable from broken."""
+    S = scale
+    c = np.zeros((GLASS_H * S, GLASS_W * S, 4), dtype=np.uint8)
+    x0, y0, x1, y1 = (v * S for v in PILL)
+    cap_h = CAP_H * S
+    tb = glass.text_bitmap(word, 13.0 * S, weight=0.23, tracking=1.9 * S)
+    tw = (tb.shape[1] / S) if tb is not None else track_w(word, 0.5, 1, 8)
+    cap_w = int((CAP_H / 2 + 20 + tw + 22) * S)
+    cx0 = int((GLASS_W * S - cap_w) / 2)
+    cy = (y0 + y1) // 2
+    top, bot = int(cy - cap_h / 2), int(cy + cap_h / 2)
+    rounded_rect(c, (cx0, top), (cx0 + cap_w, bot), (bot - top) // 2,
+                 (18, 18, 18, 128), -1)
+    rounded_rect(c, (cx0, top), (cx0 + cap_w, bot), (bot - top) // 2,
+                 _rgba(PAPER, 42), S)
+    bx = int(cx0 + cap_h / 2)
+    a = 118 + 96 * (0.5 - 0.5 * math.cos(now * (2 * math.pi / ORB_BREATH_S)))
+    cv2.circle(c, (bx, cy), int(CAP_H * 0.27 * S), _rgba(SILVER, a), -1,
+               cv2.LINE_AA)
+    if tb is not None:
+        blit_text(c, tb, int(cx0 + (cap_h / 2 + 20) * S),
+                  int(cy - tb.shape[0] / 2), 255, PAPER)
+    else:
+        draw_tracked(c, word, (int(cx0 + (cap_h / 2 + 20) * S), cy + 6 * S),
+                     0.5 * S, _rgba(PAPER, 255), S, tracking=8)
+    rect = (cx0 / S, GLASS_H - (cy + cap_h / 2) / S, cap_w / S, CAP_H)
+    return c, rect
+
+
+def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2,
+                     reveal=False):
     """The widget, drawn straight-alpha over a real macOS blur. Returns
     (rgba, capsule_rect_in_points). Everything the user does not need right
     now is transparent - that is the whole point of the glass."""
@@ -1971,8 +2072,11 @@ def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2):
     else:
         word = ""
     # ease-out on the way OPEN (entrance = responsive), smooth both ways shut
-    raw_op = ui.update(1.0 if seen else 0.0, word, now)
-    op = ease_out(raw_op) if seen else ease(raw_op)
+    open_now = seen or reveal
+    if reveal and not seen and not word:
+        word = "SLEYTH"                 # say hello, so it can be FOUND
+    raw_op = ui.update(1.0 if open_now else 0.0, word, now)
+    op = ease_out(raw_op) if open_now else ease(raw_op)
 
     # the capsule is as wide as the WORD needs - "CENTER HAND" must not spill
     # out of a capsule sized for "CLICK"
@@ -2759,10 +2863,51 @@ def main():
     cfg = load_config()
     injector = Injector(dry_run=args.dry_run)
 
-    cam = LatestFrameCamera(CAM_INDEX, CAM_W, CAM_H)
+    # The widget comes up BEFORE the camera. Opening the camera can block for
+    # as long as the user takes to answer the permission prompt, and an app
+    # with no window for that whole time is indistinguishable from a broken
+    # one - which is exactly how this failed in the wild.
+    menu_cmds = []
+    pill_ui = PillUI()
+
+    def remember_widget(x, y):
+        """The user dropped the widget somewhere - that is where it lives."""
+        cfg["widget_xy"] = [x, y]
+        save_config(cfg)
+
+    saved_xy = cfg.get("widget_xy")
+    pill = glass.GlassPill(
+        GLASS_W, GLASS_H, PILL_GAP_BOTTOM,
+        menu=[("Full view / settings", "f"), ("Reset position", "p"),
+              ("Tutorial", "t"), ("Recalibrate", "c"),
+              ("Grant Accessibility...", "A"), ("-", ""),
+              ("Quit Sleyth", "q")],
+        on_menu=lambda k: menu_cmds.append(k),
+        on_drop=remember_widget,
+        origin=tuple(saved_xy) if isinstance(saved_xy, (list, tuple))
+        and len(saved_xy) == 2 else None)
+
+    def boot_paint(word):
+        if not pill.ok:
+            return
+        rgba, rect = render_boot_rgba(word, time.time(), scale=PILL_SS)
+        pill.set_pill(*rect)
+        pill.set_chip(None)
+        pill.paint(rgba, scale=PILL_SS)
+        pill.tick(0.0)
+
+    runlog(f"widget: {'created' if pill.ok else 'UNAVAILABLE (using plain window)'}")
+    boot_paint("STARTING")
+    cam = open_camera(on_wait=lambda: boot_paint("ALLOW CAMERA"))
+    runlog(f"camera: {'opened' if cam.isOpened() else 'FAILED TO OPEN'}")
     if not cam.isOpened():
-        sys.exit("Camera would not open - System Settings > Privacy & Security "
-                 "> Camera -> enable your terminal.")
+        pill.close()
+        fatal("Sleyth could not open your camera.\n\n"
+              "Open System Settings > Privacy & Security > Camera and turn "
+              "Sleyth on, then open Sleyth again.\n\n"
+              "If the camera is in use by another app (Zoom, Photo Booth, "
+              "FaceTime), quit that first.")
+    boot_paint("STARTING")
 
     engine = HandEngine()
     clf = GestureClassifier()
@@ -2795,7 +2940,9 @@ def main():
             if r == "quit":
                 cam.release()
                 cv2.destroyAllWindows()
-                sys.exit("Calibration cancelled - Sleyth needs it to run.")
+                fatal("Sleyth needs the one-time palm calibration to work.\n\n"
+                      "Open Sleyth again and follow the two steps: show your "
+                      "palm, then the back of your hand.")
 
     app = Sleyth(cfg, injector, aspect)
     app.log({"event": "session_start", "config": cfg, "dry_run": injector.dry})
@@ -2803,30 +2950,10 @@ def main():
     last_tick = 0.0
     toast, toast_until = None, 0.0
 
-    # the floating glass widget - falls back to the plain window if AppKit
-    # will not give us one
-    menu_cmds = []
-    pill_ui = PillUI()
-
-    def remember_widget(x, y):
-        """The user dropped the widget somewhere - that is where it lives."""
-        cfg["widget_xy"] = [x, y]
-        save_config(cfg)
-
+    # (the widget itself was created before the camera - see above)
     _STILL[0] = glass.reduce_motion()
     if _STILL[0]:
         print("Reduce Motion is on - the widget will hold still.")
-    saved_xy = cfg.get("widget_xy")
-    pill = glass.GlassPill(
-        GLASS_W, GLASS_H, PILL_GAP_BOTTOM,
-        menu=[("Full view / settings", "f"), ("Reset position", "p"),
-              ("Tutorial", "t"), ("Recalibrate", "c"),
-              ("Grant Accessibility...", "A"), ("-", ""),
-              ("Quit Sleyth", "q")],
-        on_menu=lambda k: menu_cmds.append(k),
-        on_drop=remember_widget,
-        origin=tuple(saved_xy) if isinstance(saved_xy, (list, tuple))
-        and len(saved_xy) == 2 else None)
 
     # An unsigned, quarantined .app gets run from a read-only randomized
     # mount ("App Translocation") - Accessibility grants then never stick,
@@ -2884,6 +3011,11 @@ def main():
 
     last_seq = -1
     last_trust_check = 0.0
+    last_paint = 0.0
+    last_frame_t = time.time()
+    stall_logged = [False]
+    first_frame_logged = [False]
+    reveal_until = time.time() + 3.0     # open on launch so it can be FOUND
     fps_ema = 30.0
     last_vision_t = time.time()
     while True:
@@ -2894,10 +3026,26 @@ def main():
 
         seq, raw = cam.latest()
         if seq == last_seq or raw is None:
+            # The WIDGET MUST NOT DEPEND ON THE CAMERA. This used to `continue`
+            # straight past the paint, so if the camera delivered no frames
+            # the window existed but was never drawn into - a running app,
+            # correctly placed, showing absolutely nothing.
+            if view == "panel" and pill.ok and now - last_paint > 1 / 60.0:
+                last_paint = now
+                stalled = now - last_frame_t > 3.0
+                if stalled and not stall_logged[0]:
+                    stall_logged[0] = True
+                    runlog("camera opened but delivers NO FRAMES")
+                boot_paint("NO CAMERA" if stalled else "STARTING")
             time.sleep(0.002)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
             continue
+        last_frame_t = now
+        if not first_frame_logged[0]:
+            first_frame_logged[0] = True
+            runlog(f"first camera frame received ({raw.shape[1]}x{raw.shape[0]})"
+                   f" - widget is live")
         last_seq = seq
         frame = cv2.flip(raw, 1)
         h, w = frame.shape[:2]
@@ -2984,7 +3132,8 @@ def main():
         elif pill.ok:
             rgba, rect, chip = render_pill_rgba(app, obs, active, toast, now,
                                                 hand_lms, pill_ui,
-                                                scale=PILL_SS)
+                                                scale=PILL_SS,
+                                                reveal=now < reveal_until)
             pill.set_pill(*rect)
             pill.set_chip(chip)
             pill.paint(rgba, scale=PILL_SS)
@@ -3066,4 +3215,24 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        # Never die silently. Without this a packaged app just... closes,
+        # and the only report anyone can give is "it does nothing".
+        import traceback
+        tb = traceback.format_exc()
+        traceback.print_exc()
+        try:
+            log = os.path.join(SUPPORT, "crash.txt")
+            with open(log, "w") as f:
+                f.write(tb)
+        except Exception:
+            log = "(could not be written)"
+        fatal(f"Sleyth hit an unexpected error and had to stop.\n\n"
+              f"{tb.strip().splitlines()[-1]}\n\n"
+              f"Details saved to:\n{log}")
