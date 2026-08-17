@@ -3015,6 +3015,7 @@ def main():
     last_frame_t = time.time()
     stall_logged = [False]
     first_frame_logged = [False]
+    pending_key = [None]
     reveal_until = time.time() + 3.0     # open on launch so it can be FOUND
     fps_ema = 30.0
     last_vision_t = time.time()
@@ -3023,6 +3024,18 @@ def main():
         # high-rate output stage: the cursor and scroll glide toward their
         # targets every iteration (~100+Hz), not just on camera frames
         injector.glide_tick(now)
+
+        # Menu commands are read EVERY iteration, before the camera gate.
+        # They used to be handled only after a new frame arrived, so with a
+        # stalled camera "Quit Sleyth" did nothing - and with no Dock icon
+        # that menu is the only way out of the app.
+        if menu_cmds:
+            pending = menu_cmds.pop(0)
+            if pending == "q":
+                runlog("quit: requested from the menu")
+                break
+            if pending:
+                pending_key[0] = pending
 
         seq, raw = cam.latest()
         if seq == last_seq or raw is None:
@@ -3145,11 +3158,11 @@ def main():
                                                lms=hand_lms))
 
         k = cv2.waitKey(1) & 0xFF
-        if menu_cmds:                      # the menu bar is the widget's
-            cmd = menu_cmds.pop(0)         # control surface: a borderless
-            if cmd:                        # window must never take focus
-                k = ord(cmd)
+        if pending_key[0]:                 # menu item picked up above
+            k = ord(pending_key[0])
+            pending_key[0] = None
         if k == ord("q"):
+            runlog("quit: requested")
             break
         elif k == ord("f"):
             if tutorial is None:      # the tutorial owns the full view -
@@ -3208,10 +3221,19 @@ def main():
                     break
             show_view()
 
-    pill.close()
-    cam.release()
-    cv2.destroyAllWindows()
-    app.report()
+    # Shutting down must ALWAYS finish. A menu-bar app with no Dock icon
+    # that fails to quit can only be killed from Activity Monitor, so no
+    # single cleanup step is allowed to hang or throw on the way out.
+    runlog("quit: shutting down")
+    for step, fn in (("widget", pill.close), ("camera", cam.release),
+                     ("windows", cv2.destroyAllWindows), ("report", app.report)):
+        try:
+            fn()
+        except Exception as e:
+            runlog(f"quit: {step} cleanup failed ({e}) - continuing")
+    runlog("quit: done")
+    sys.stdout.flush()
+    os._exit(0)             # never linger on a stuck thread
 
 
 if __name__ == "__main__":
