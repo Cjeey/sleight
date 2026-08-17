@@ -69,6 +69,8 @@ except ImportError:
     kAXTrustedCheckOptionPrompt = None
 
 
+VERSION = "8.0"                # one place; shown on screen and by --check
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Inside the packaged .app, HERE is read-only (and with App Translocation it
@@ -2721,7 +2723,8 @@ def main():
 
     if args.check:
         # a tester who says "it doesn't work" can send this instead of a guess
-        print(f"Sleyth {'packaged' if FROZEN else 'from source'}")
+        print(f"Sleyth v{VERSION} {'packaged' if FROZEN else 'from source'}")
+        print(f"  running    {sys.executable}")
         print(f"  settings   {SUPPORT}")
         print(f"  model      {'found' if os.path.exists(os.path.join(HERE, 'hand_landmarker.task')) else 'MISSING'}")
         print(f"  your poses {model_path() if os.path.exists(model_path()) else 'built-in rules'}")
@@ -2956,8 +2959,9 @@ def main():
                 cv2.circle(frame, (cx_, cy_), 9, (0, 0, 0), 1, cv2.LINE_AA)
             draw_guide(frame, active, now, w, h)
             draw_hud(frame, app, toast, now, w, h)
-            cv2.putText(frame, f"{engine.kind}   cam {cam.cap_fps:.0f}   "
-                               f"track {fps_ema:.0f}   {(active or '-')}",
+            cv2.putText(frame, f"v{VERSION}   {engine.kind}   "
+                               f"cam {cam.cap_fps:.0f}   track {fps_ema:.0f}"
+                               f"   {(active or '-')}",
                         (w - 630, 36), FONT, 0.45, GREY, 1, cv2.LINE_AA)
             if tutorial is not None:
                 tutorial.draw(frame, app, now, w, h)
