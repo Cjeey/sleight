@@ -15,11 +15,18 @@ Do not run it from Downloads or straight out of the zip — macOS runs
 unmoved apps from a temporary location and forgets their permissions
 every time. (Sleyth will warn you if you skip this.)
 
-**1. Open it the first time by RIGHT-CLICKING the app → Open.**
-Then click **Open** in the dialog.
+**1. The first open takes three clicks — macOS blocks unsigned apps.**
 
-Double-clicking will NOT work the first time: macOS blocks unsigned apps.
-Right-click → Open is the standard way to allow one. After this, it opens
+1. Double-click Sleyth. macOS says it "could not verify" it — click **Done**
+   (not "Move to Trash"!)
+2. Open **System Settings → Privacy & Security**, scroll to the bottom —
+   there is a line saying Sleyth was blocked. Click **Open Anyway**.
+3. Confirm **Open Anyway** in the dialog (your Mac may ask for your
+   password).
+
+This is Apple's standard flow for apps from outside the App Store — on
+older Macs (macOS 14 and earlier), right-clicking the app → **Open** works
+instead. Either way it only happens once; after this, Sleyth opens
 normally.
 
 **2. Allow the camera** when macOS asks. Sleyth needs it to see your hand.
@@ -37,13 +44,17 @@ The widget shows a white **DRY** chip when this is the problem.
 
 ---
 
-## Teach it your hand (3 minutes, worth it)
+## First launch (5 minutes, guided)
 
-Sleyth ships with generic hand rules. They are okay. Training it on **your**
-hand makes it dramatically better — and takes one run.
+Sleyth walks you through everything itself:
 
-The app will offer this. Say yes. You show it five poses for six seconds each.
-Nothing is uploaded; the model file stays on your Mac.
+1. **Calibration** — show it your palm, then the back of your hand,
+   5 seconds each. This happens once.
+2. **A guided tour** — six gestures, one at a time, at your own pace.
+   You press Next; nothing moves on without you. Nothing you do during
+   the tour touches your real cursor.
+
+Nothing is uploaded; everything it learns stays on your Mac.
 
 ---
 
@@ -86,5 +97,5 @@ Rough edges are expected. Tell me about them.
 
 ## Removing it
 
-Drag Sleyth.app to the Trash. It leaves nothing behind except its settings
-file next to the app.
+Drag Sleyth.app to the Trash. Its settings live in one folder you can also
+delete: `~/Library/Application Support/Sleyth`. Nothing else is touched.
