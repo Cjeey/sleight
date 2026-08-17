@@ -3084,15 +3084,20 @@ def save_clip(kind, frames):
     return path
 
 
-def draw_clip(img, x, y, size, clip, now, color=PAPER):
+def draw_clip(img, x, y, size, clip, now, color=PAPER, mirror=False):
     """Replay a recorded hand inside the chip - same skeleton style as the
-    live hand map, so 'yours should look like this' is literal."""
+    live hand map, so 'yours should look like this' is literal. `mirror`
+    flips it left-right: a mirrored palm reads as the BACK of that hand."""
     u = (now % CLIP_LOOP_S) / CLIP_LOOP_S * (len(clip) - 1)
     a = min(int(u), len(clip) - 2)
     w = u - a
-    pts = [(int(x + (p0[0] * (1 - w) + p1[0] * w) * size),
-            int(y + (p0[1] * (1 - w) + p1[1] * w) * size))
-           for p0, p1 in zip(clip[a], clip[a + 1])]
+    pts = []
+    for p0, p1 in zip(clip[a], clip[a + 1]):
+        px = p0[0] * (1 - w) + p1[0] * w
+        py = p0[1] * (1 - w) + p1[1] * w
+        if mirror:
+            px = 1.0 - px
+        pts.append((int(x + px * size), int(y + py * size)))
     # stroke scales with the chip: a 1px skeleton reads as a scratch, not a
     # hand, at tutorial size
     th = max(2, int(round(size / 64.0)))
@@ -3142,6 +3147,16 @@ def draw_gesture_anim(img, x, y, size, kind, now, color=PAPER):
     if clip:
         draw_clip(img, x, y, size, clip, now, color)
         return
+    if kind == "turn":
+        # "Show the back of your hand" = the RECORDED palm clip, mirrored.
+        # Same real hand the palm step just showed, thumb on the other side
+        # - visually literal, and stylistically identical to step 1. The
+        # schematic glyph below stays as the fallback if no palm was
+        # recorded (and a real recorded turn clip, above, would win).
+        pclip = load_clip("palm")
+        if pclip:
+            draw_clip(img, x, y, size, pclip, now, color, mirror=True)
+            return
     t = (now % 1.8) / 1.8                       # one loop = 1.8s
     cx, cy = x + size // 2, y + size // 2
     s = size * 0.62

@@ -1507,11 +1507,31 @@ assert _fr2 is ob5b._canvas and _fr is not _fr2
 print("33. onboarding clicks, hover and canvas reuse OK")
 
 # ---- 34. 'turn' shows the palm REVERSED, not a rotating sliver
-# The user's words: "just reverse the hand of the palm". Fingers are
-# symmetric, so the thumb side is the whole signal: left of centre while
-# the palm is held, right of centre once it has turned over. And the hand
-# must be FULL WIDTH in both held phases - 8.2 spent most of the loop
-# squashed edge-on, which read as a stick.
+# The user's words: "just reverse the hand of the palm". With a recorded
+# palm clip, 'turn' must replay THAT clip mirrored; without one, the
+# schematic glyph holds the palm, flips quickly, and holds the reverse.
+
+# (a) recorded path: a clip parked at x=0.2 must replay at x=0.8
+_pt = [(0.2, 0.5)] * 21
+m._CLIPS["palm"] = [_pt, _pt]
+m._CLIPS["turn"] = None                     # no recorded turn: palm wins
+_imgt = _np.zeros((160, 160, 3), dtype=_np.uint8)
+m.draw_gesture_anim(_imgt, 10, 10, 140, "turn", BASE)
+_, _xst = _np.where(_imgt[..., 0] > 100)
+assert _xst.mean() > 10 + 0.7 * 140, \
+    "'turn' with a recorded palm must replay it MIRRORED (right side)"
+_imgp = _np.zeros((160, 160, 3), dtype=_np.uint8)
+m.draw_gesture_anim(_imgp, 10, 10, 140, "palm", BASE)
+_, _xsp = _np.where(_imgp[..., 0] > 100)
+assert _xsp.mean() < 10 + 0.3 * 140, "the palm clip itself is unmirrored"
+del m._CLIPS["palm"], m._CLIPS["turn"]
+
+# (b) glyph fallback: fingers are symmetric, so the thumb side is the
+# whole signal - left of centre while the palm is held, right of centre
+# once it has turned over. And the hand must be FULL WIDTH in both held
+# phases - 8.2 spent most of the loop squashed edge-on: a stick.
+m._CLIPS["palm"] = None                     # force the procedural glyph
+m._CLIPS["turn"] = None
 def _thumb_side(u):
     img = _np.zeros((300, 300, 3), dtype=_np.uint8)
     m.draw_gesture_anim(img, 20, 20, 260, "turn", u * 4.0)   # T = 4.0
@@ -1540,7 +1560,8 @@ for _k in range(40):
     if len(xs) == 0 or xs.max() - xs.min() < 0.5 * 260:
         _narrow += 1
 assert _narrow <= 8, f"turn spends too long edge-on: {_narrow}/40 frames"
-print("34. turn = the palm reversed; full-width hand, quick flip OK")
+del m._CLIPS["palm"], m._CLIPS["turn"]
+print("34. turn = the palm reversed (recorded clip mirrored, glyph too) OK")
 
 print()
 print("ALL SLEYTH v8.3 TESTS PASSED")
