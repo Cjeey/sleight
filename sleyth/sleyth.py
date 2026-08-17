@@ -2031,30 +2031,34 @@ def render_boot_rgba(word, now, scale=2):
     app with no window anywhere, which is indistinguishable from broken."""
     S = scale
     c = np.zeros((GLASS_H * S, GLASS_W * S, 4), dtype=np.uint8)
-    x0, y0, x1, y1 = (v * S for v in PILL)
-    cap_h = CAP_H * S
+    # Lay this out in POINTS and scale exactly once. Mixing already-scaled
+    # pixels back into point math pushed the word ~24pt right, leaving a
+    # gap after the orb and the text crowding the capsule's right edge.
     tb = glass.text_bitmap(word, 13.0 * S, weight=0.23, tracking=1.9 * S)
     tw = (tb.shape[1] / S) if tb is not None else track_w(word, 0.5, 1, 8)
-    cap_w = int((CAP_H / 2 + 20 + tw + 22) * S)
-    cx0 = int((GLASS_W * S - cap_w) / 2)
-    cy = (y0 + y1) // 2
-    top, bot = int(cy - cap_h / 2), int(cy + cap_h / 2)
-    rounded_rect(c, (cx0, top), (cx0 + cap_w, bot), (bot - top) // 2,
+    text_x = CAP_H / 2 + 20              # same offset the live pill uses
+    cap_w = text_x + tw + 22
+    x0 = (GLASS_W - cap_w) / 2.0
+    cy_pt = GLASS_H / 2.0
+
+    cx0, cx1 = int(x0 * S), int((x0 + cap_w) * S)
+    top, bot = int((cy_pt - CAP_H / 2) * S), int((cy_pt + CAP_H / 2) * S)
+    cy = int(cy_pt * S)
+    rounded_rect(c, (cx0, top), (cx1, bot), (bot - top) // 2,
                  (18, 18, 18, 128), -1)
-    rounded_rect(c, (cx0, top), (cx0 + cap_w, bot), (bot - top) // 2,
+    rounded_rect(c, (cx0, top), (cx1, bot), (bot - top) // 2,
                  _rgba(PAPER, 42), S)
-    bx = int(cx0 + cap_h / 2)
+
     a = 118 + 96 * (0.5 - 0.5 * math.cos(now * (2 * math.pi / ORB_BREATH_S)))
-    cv2.circle(c, (bx, cy), int(CAP_H * 0.27 * S), _rgba(SILVER, a), -1,
-               cv2.LINE_AA)
+    cv2.circle(c, (int((x0 + CAP_H / 2) * S), cy), int(CAP_H * 0.27 * S),
+               _rgba(SILVER, a), -1, cv2.LINE_AA)
     if tb is not None:
-        blit_text(c, tb, int(cx0 + (cap_h / 2 + 20) * S),
+        blit_text(c, tb, int((x0 + text_x) * S),
                   int(cy - tb.shape[0] / 2), 255, PAPER)
     else:
-        draw_tracked(c, word, (int(cx0 + (cap_h / 2 + 20) * S), cy + 6 * S),
+        draw_tracked(c, word, (int((x0 + text_x) * S), cy + 6 * S),
                      0.5 * S, _rgba(PAPER, 255), S, tracking=8)
-    rect = (cx0 / S, GLASS_H - (cy + cap_h / 2) / S, cap_w / S, CAP_H)
-    return c, rect
+    return c, (x0, GLASS_H - (cy_pt + CAP_H / 2), cap_w, CAP_H)
 
 
 def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2,
