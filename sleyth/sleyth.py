@@ -47,6 +47,21 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import glass                                                    # noqa: E402
 
+# mediapipe's drawing_utils does `import matplotlib.pyplot` at module load,
+# purely for plot_landmarks() - a 3D debug plot this app never calls. That
+# one unused import drags in matplotlib AND fontTools, and inside the
+# packaged app it rebuilds its font cache on EVERY launch: measured 15s of
+# startup, and ~40MB of bundle, for a function we do not use. A stub
+# satisfies the import; only plot_landmarks would notice.
+if "matplotlib" not in sys.modules:
+    import types as _types
+    _mpl = _types.ModuleType("matplotlib")
+    _mpl.__version__ = "0.0.0+sleyth-stub"
+    _plt = _types.ModuleType("matplotlib.pyplot")
+    _mpl.pyplot = _plt
+    sys.modules["matplotlib"] = _mpl
+    sys.modules["matplotlib.pyplot"] = _plt
+
 try:
     import mediapipe as mp
 except ImportError as e:

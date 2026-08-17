@@ -30,15 +30,18 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
-    # NOTE: matplotlib must NOT be excluded. mediapipe.solutions.drawing_utils
-    # imports it at module load, and mediapipe/__init__ imports solutions - so
-    # excluding it builds an app that cannot import mediapipe at all.
     # jaxlib alone is 239MB - pulled in transitively by mediapipe and never
     # touched by hand tracking. Dropping it and friends halves the download.
+    # matplotlib/fontTools go too: sleyth.py installs a stub BEFORE importing
+    # mediapipe, so drawing_utils' unused `import matplotlib.pyplot` is
+    # satisfied without the real package. Those two changes belong together -
+    # excluding it without the stub yields an app that cannot import
+    # mediapipe at all.
     excludes=["tkinter", "PyQt5", "PyQt6", "PySide2", "PySide6",
               "IPython", "jupyter", "pytest", "pandas", "torch",
               "tensorflow", "jax", "jaxlib", "scipy", "sentencepiece",
-              "ml_dtypes", "opt_einsum"],
+              "ml_dtypes", "opt_einsum", "matplotlib", "fontTools",
+              "PIL", "pyparsing", "kiwisolver", "dateutil"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
