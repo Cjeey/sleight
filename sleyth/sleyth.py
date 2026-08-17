@@ -1942,6 +1942,11 @@ HAND_W, HAND_H = 112, 64         # the hand, floating BESIDE the capsule
 GAP = 16
 EXPAND_TAU = 0.09                # capsule grow/shrink time constant
 MORPH_S = 0.20                   # how long one word takes to become the next
+ORB_GAP = 15                     # clear space between the orb and the word:
+                                 # the orb's own radius is not padding, and
+                                 # measuring from the capsule edge left them
+                                 # 7pt apart, which reads as touching
+TEXT_PAD_R = 24                  # breathing room at the capsule's tail
 ORB_BREATH_S = 1.8               # idle breath period (Claude's cds-dot-pulse)
 ORB_A_LO, ORB_A_HI = 118, 214    # ...and it breathes on alpha, never on size
 _STILL = [False]                 # honour the system's Reduce Motion setting
@@ -2036,8 +2041,8 @@ def render_boot_rgba(word, now, scale=2):
     # gap after the orb and the text crowding the capsule's right edge.
     tb = glass.text_bitmap(word, 13.0 * S, weight=0.23, tracking=1.9 * S)
     tw = (tb.shape[1] / S) if tb is not None else track_w(word, 0.5, 1, 8)
-    text_x = CAP_H / 2 + 20              # same offset the live pill uses
-    cap_w = text_x + tw + 22
+    text_x = CAP_H / 2 + CAP_H * 0.27 + ORB_GAP   # same offset as the live pill
+    cap_w = text_x + tw + TEXT_PAD_R
     x0 = (GLASS_W - cap_w) / 2.0
     cy_pt = GLASS_H / 2.0
 
@@ -2096,7 +2101,9 @@ def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2,
             t_ = glass.text_bitmap(w_, 13.0 * S, weight=0.23, tracking=1.9 * S)
             tb_w = max(tb_w, (t_.shape[1] / S) if t_ is not None
                        else track_w(w_, 0.5, 1, 8))
-    open_w = max(NUB + 74, min(FULL_W, CAP_H / 2 + 20 + tb_w + 22))
+    # measured from the ORB's right edge, not the capsule's left
+    text_off = CAP_H / 2 + CAP_H * 0.27 + ORB_GAP
+    open_w = max(NUB + 74, min(FULL_W, text_off + tb_w + TEXT_PAD_R))
 
     # width AND height morph, Dynamic-Island style: a circle becomes a capsule
     cap_w = NUB + (open_w - NUB) * op
@@ -2153,7 +2160,7 @@ def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2,
     # ---- the word, becoming the next word: old lifts out, new rises in
     if op > 0.25:
         p = ui.morph(now)
-        tx = int((x0 + cap_h / 2 + 20) * S)
+        tx = int((x0 + cap_h / 2 + cap_h * 0.27 + ORB_GAP) * S)
         gate_a = min(1.0, (op - 0.25) / 0.4)
 
         def _word(txt, dy, a):
