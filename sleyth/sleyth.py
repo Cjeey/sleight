@@ -260,11 +260,13 @@ def play(kind):
 # --------------------------------------------------------------------------- calm audio
 
 def _write_wav(path, samples, rate=22050):
+    """samples: (n,) mono or (n,2) stereo, float -1..1."""
     import wave
     data = np.clip(samples, -1.0, 1.0)
+    ch = 1 if data.ndim == 1 else data.shape[1]
     pcm = (data * 32767).astype("<i2").tobytes()
     with wave.open(path, "wb") as w:
-        w.setnchannels(1)
+        w.setnchannels(ch)
         w.setsampwidth(2)
         w.setframerate(rate)
         w.writeframes(pcm)
@@ -279,19 +281,52 @@ def ensure_sounds():
     try:
         rate = 22050
         if not os.path.exists(pad):
-            dur = 60.0
-            t = np.linspace(0, dur, int(rate * dur), endpoint=False)
-            # a low triad, slightly detuned so it breathes instead of buzzing
-            s = (0.34 * np.sin(2 * np.pi * 110.0 * t)
-                 + 0.26 * np.sin(2 * np.pi * 110.6 * t)
-                 + 0.18 * np.sin(2 * np.pi * 164.8 * t)
-                 + 0.12 * np.sin(2 * np.pi * 220.4 * t))
-            s *= 0.55 + 0.45 * np.sin(2 * np.pi * 0.045 * t)   # slow swell
-            edge = int(rate * 3.0)                             # 3s fades
-            env = np.ones_like(s)
-            env[:edge] = np.linspace(0, 1, edge)
-            env[-edge:] = np.linspace(1, 0, edge)
-            _write_wav(pad, s * env * 0.16, rate)
+            # Bright, wide and weightless - "galaxies", not a horror drone.
+            # The first version sat on a 110Hz detuned root, which is exactly
+            # the recipe for menace. This one lives an octave and a half up
+            # in a major-9th voicing, spread across the stereo field, with
+            # slow bell tones drifting through it like distant stars.
+            dur = 72.0
+            n = int(rate * dur)
+            t = np.linspace(0, dur, n, endpoint=False)
+            rng = np.random.default_rng(7)          # fixed: same every build
+
+            # C major 9, no minor intervals anywhere = nothing to sound ominous
+            voices = [(261.63, 0.30), (392.00, 0.24), (523.25, 0.18),
+                      (587.33, 0.13), (783.99, 0.09)]
+            left = np.zeros(n)
+            right = np.zeros(n)
+            for i, (f, amp) in enumerate(voices):
+                # each voice breathes on its own slow cycle so the chord
+                # shimmers instead of sitting still
+                lfo = 0.6 + 0.4 * np.sin(2 * np.pi * (0.021 + 0.007 * i) * t
+                                         + i)
+                left += amp * lfo * np.sin(2 * np.pi * f * t + i)
+                # a few cents apart per side: width without any phasing swirl
+                right += amp * lfo * np.sin(2 * np.pi * f * 1.0016 * t + i * 1.7)
+
+            # distant bells: soft, sparse, high, long decay
+            for k in range(14):
+                start = 2.0 + k * (dur - 6.0) / 14.0 + float(rng.uniform(-0.7, 0.7))
+                f = float(rng.choice([1046.50, 1318.51, 1567.98, 2093.00]))
+                i0 = int(start * rate)
+                ln = int(rate * 4.5)
+                if i0 + ln > n:
+                    break
+                tt = np.linspace(0, 4.5, ln, endpoint=False)
+                bell = (np.sin(2 * np.pi * f * tt)
+                        + 0.35 * np.sin(2 * np.pi * f * 2.01 * tt))
+                bell *= np.exp(-1.1 * tt) * 0.05
+                pan = float(rng.uniform(0.25, 0.75))
+                left[i0:i0 + ln] += bell * (1 - pan)
+                right[i0:i0 + ln] += bell * pan
+
+            edge = int(rate * 5.0)                  # long, unhurried fades
+            env = np.ones(n)
+            env[:edge] = np.linspace(0, 1, edge) ** 2
+            env[-edge:] = np.linspace(1, 0, edge) ** 2
+            st = np.stack([left * env, right * env], axis=1) * 0.13
+            _write_wav(pad, st, rate)
         if not os.path.exists(chime):
             dur = 0.9
             t = np.linspace(0, dur, int(rate * dur), endpoint=False)
@@ -456,6 +491,7 @@ DEFAULT_CONFIG = {
     "panel_pos": "center",         # fallback panel dock: "center" or "right"
     "widget_xy": None,             # where you last dragged the widget to
     "precision_assist": PRECISION_MAX,   # 0 = pure 1:1, 0.55 = fine aiming
+    "summon_hold_s": STILL_MS / 1000,    # how long the palm must hold still
 }
 
 
@@ -974,7 +1010,8 @@ class Gate:
 
     def update(self, obs, now, aspect):
         self.history.append((now, obs["cx"], obs["cy"], obs["scale"]))
-        while self.history and now - self.history[0][0] > STILL_MS / 1000:
+        hold_s = float(self.cfg.get("summon_hold_s", STILL_MS / 1000))
+        while self.history and now - self.history[0][0] > hold_s:
             self.history.popleft()
 
         pose_ok = obs["pose"] == "palm"
@@ -986,7 +1023,7 @@ class Gate:
         drift, window_full = 0.0, False
         if len(self.history) >= 4:
             span = self.history[-1][0] - self.history[0][0]
-            window_full = span >= (STILL_MS / 1000) * 0.9
+            window_full = span >= hold_s * 0.9
             mx = sum(h[1] for h in self.history) / len(self.history)
             my = sum(h[2] for h in self.history) / len(self.history)
             ms = sum(h[3] for h in self.history) / len(self.history) or 1e-6
@@ -1003,7 +1040,7 @@ class Gate:
             self.last_fail_t = now
             self.hold_progress = 0.0
             return False
-        self.hold_progress = min(1.0, (now - self.history[0][0]) / (STILL_MS / 1000))
+        self.hold_progress = min(1.0, (now - self.history[0][0]) / hold_s)
         return instant and still_ok and (now - self.last_fail_t) >= REARM_GAP_S
 
     def hand_lost(self, now):
@@ -2428,6 +2465,17 @@ GRID = 8
 DUR_BASE, DUR_SLOW = 0.30, 0.50
 
 
+def mix(color, alpha, bg=INK):
+    """Pre-blend a colour toward the background.
+
+    cv2 shape drawing on an OPAQUE 3-channel frame silently DROPS the 4th
+    component, so an "alpha 22" fill painted as full-strength white - which
+    is how a subtle chip became a solid block. On the onboarding screens,
+    fills and strokes must be blended by hand."""
+    a = max(0.0, min(1.0, alpha / 255.0))
+    return tuple(int(c * a + b * (1 - a)) for c, b in zip(color, bg))
+
+
 def sf(img, text, xy, size, weight=0.0, color=PAPER, alpha=255,
        align="left", tracking=0.0):
     """Draw real system text. Returns the width drawn, in pixels."""
@@ -2491,16 +2539,14 @@ class Button:
         a = alpha if self.enabled else int(alpha * 0.38)
         if self.primary:
             fill = PAPER if not self.hover else (255, 255, 255)
-            rounded_rect(img, (x, y), (x + w, y + h), h // 2,
-                         _rgba(fill, a), -1)
+            rounded_rect(img, (x, y), (x + w, y + h), h // 2, mix(fill, a), -1)
             sf(img, self.label, (x + w / 2, y + h / 2), 17.0, 0.3,
                (10, 10, 10), a, align="center")
         else:
             rounded_rect(img, (x, y), (x + w, y + h), h // 2,
-                         _rgba(PAPER, int(a * (0.55 if self.hover else 0.32))),
-                         2)
+                         mix(PAPER, a * (0.42 if self.hover else 0.22)), 2)
             sf(img, self.label, (x + w / 2, y + h / 2), 17.0, 0.3,
-               PAPER, a, align="center")
+               PAPER, int(a * 0.92), align="center")
 
 
 class Onboarding:
@@ -2780,10 +2826,33 @@ class Onboarding:
             sf(frame, line, (tx, yy), 15.0, 0.0, GREY, a)
             yy += 3 * GRID
 
-        # --- live feedback: is it actually seeing you?
-        fy = cy + card // 2 - 9 * GRID
+        # --- THE thing that was missing: gestures do nothing until Sleyth is
+        # awake. Practising scroll at a sleeping app just silently fails.
+        awake = app.state == Sleyth.ARMED
         seen = obs is not None
         done = self.done_here()
+        wy = cy + card // 2 - 15 * GRID
+        if not awake and self.idx > 0:
+            msg = "Asleep - hold an open palm still to wake it"
+            cw = int(sf_w(msg, 14.0, 0.3)) + 9 * GRID
+            rounded_rect(frame, (tx, wy - 3 * GRID), (tx + cw, wy + 3 * GRID),
+                         3 * GRID, RAISED, -1)
+            rounded_rect(frame, (tx, wy - 3 * GRID), (tx + cw, wy + 3 * GRID),
+                         3 * GRID, HAIR, 1)
+            prog = app.gate.hold_progress
+            r = 9
+            cv2.circle(frame, (tx + 3 * GRID, wy), r, HAIR, 2, cv2.LINE_AA)
+            if prog > 0:
+                cv2.ellipse(frame, (tx + 3 * GRID, wy), (r, r), -90, 0,
+                            int(360 * prog), PAPER, 2, cv2.LINE_AA)
+            sf(frame, msg, (tx + 5 * GRID + 4, wy), 14.0, 0.3, PAPER, a)
+        elif awake:
+            cv2.circle(frame, (tx + 4, wy), 4, PAPER, -1, cv2.LINE_AA)
+            sf(frame, "Awake - it can see you", (tx + 3 * GRID, wy), 14.0,
+               0.3, SILVER, int(a * 0.85))
+
+        # --- live feedback: is it actually seeing you?
+        fy = cy + card // 2 - 9 * GRID
         if done:
             cv2.circle(frame, (tx + 7, fy - 5), 7, PAPER, -1, cv2.LINE_AA)
             sf(frame, "Got it - you can move on.", (tx + 3 * GRID, fy), 15.0,
@@ -2805,16 +2874,18 @@ class Onboarding:
 
         # --- controls: the user decides when to move on
         by = cy + card // 2 - 2 * GRID
+        back = Button("Back", "back", enabled=self.idx > 0)
         again = Button("Show again", "again")
         nxt = Button("Next" if self.idx + 1 < len(self.LESSONS) else "Finish",
                      "next", primary=True)
-        wa = again.layout(0, 0)
-        again.layout(tx, by)
-        nxt.layout(tx + wa + 2 * GRID, by)
-        for b in (again, nxt):
+        wb, wa = back.layout(0, 0), again.layout(0, 0)
+        back.layout(tx, by)
+        again.layout(tx + wb + 1 * GRID, by)
+        nxt.layout(tx + wb + wa + 3 * GRID, by)
+        for b in (back, again, nxt):
             b.hover = b.hit(*self.mouse)
             b.draw(frame, a)
-        self.buttons = [again, nxt]
+        self.buttons = [back, again, nxt]
 
     def _done(self, frame, fade, w, h, cx):
         a = int(255 * fade)
@@ -2843,7 +2914,9 @@ class Onboarding:
 # skeleton. Real human motion, no video files, perfectly on-brand. The
 # procedural glyphs below stay as the fallback for any gesture without a
 # recording.
-CLIP_LOOP_S = 1.8                 # replay loop, matches the drawn anims
+CLIP_LOOP_S = 4.6                 # ~5s: a demonstration you can actually
+                                  # follow. At 1.8s the hand was a blur you
+                                  # had to watch four times to read once.
 CLIP_FRAMES = 54                  # 1.8s at 30fps
 _CLIPS = {}                       # kind -> list[frame] | None (miss cached)
 
@@ -3291,26 +3364,31 @@ def _handedness(res):
 def run_calibration(cap, engine, cfg, aspect):
     """Guided palm calibration. Returns 'ok', 'retry', or 'quit'.
     Only mutates cfg on success."""
-    phases = [("Show your PALM to the camera", 1.4),
-              ("Now show the BACK of your hand", 1.4)]
+    # 5 seconds each, on purpose: this is the first thing a new user does,
+    # and at 1.4s it was over before they understood it had started.
+    phases = [("Show your palm", "Open your hand and face your palm at the "
+               "camera. Hold it there.", "palm", 5.0),
+              ("Now the back of your hand", "Turn your hand over, keeping it "
+               "open, and hold it there.", "fist", 5.0)]
     means, labels = [], []
-    for phase_idx, (label_text, seconds) in enumerate(phases):
+    W, H = 1100, 700
+    for phase_idx, (title, how, anim, seconds) in enumerate(phases):
         samples, t0 = [], None
         while True:
-            ok, frame = cap.read()
+            ok, cam_frame = cap.read()
             if not ok:
                 cv2.waitKey(50)
                 return "retry"
-            frame = cv2.flip(frame, 1)
-            r = engine.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                               time.time())
+            cam_frame = cv2.flip(cam_frame, 1)
+            now = time.time()
+            r = engine.process(cv2.cvtColor(cam_frame, cv2.COLOR_BGR2RGB), now)
             frac, done = 0.0, False
             if r is not None:
                 lms, world, hlabel, _hs = r
                 obs = hand_obs(lms, world, aspect)
                 if obs:
                     if t0 is None:
-                        t0 = time.time()
+                        t0 = now
                     samples.append(obs["nz"])
                     # ONLY the palm phase teaches chirality. MediaPipe reports
                     # a different label for the back of the same hand, so
@@ -3318,34 +3396,65 @@ def run_calibration(cap, engine, cfg, aspect):
                     # label silently inverts the palm test forever.
                     if phase_idx == 0:
                         labels.append(hlabel)
-                    frac = min(1.0, (time.time() - t0) / seconds)
+                    frac = min(1.0, (now - t0) / seconds)
                     done = frac >= 1.0
-                draw_hand(frame, lms, None, None, frame.shape[1],
-                          frame.shape[0])
+                else:
+                    t0 = None          # lost the hand: the hold restarts
+            else:
+                t0 = None
 
-            # dark scrim FIRST: the camera is usually a bright wall, and light
-            # type on a bright wall cannot be read
-            band = frame.copy()
-            cv2.rectangle(band, (0, 0), (frame.shape[1], 172), (0, 0, 0), -1)
-            cv2.addWeighted(band, 0.62, frame, 0.38, 0, frame)
-            draw_tracked(frame, f"CALIBRATION  {phase_idx + 1} / 2", (40, 50),
-                         0.7, PAPER, 1, tracking=12, halo=True)
-            draw_serif(frame, label_text, (40, 94), 0.85, PAPER, 1, halo=True)
-            cv2.line(frame, (40, 122), (540, 122), HAIR, 3, cv2.LINE_AA)
+            # Same screen as every tutorial lesson - this IS a lesson, and
+            # dressing it as a different thing is what made it feel abrupt.
+            frame = np.zeros((H, W, 3), np.uint8)
+            frame[:] = INK
+            pad, card, cy = 7 * GRID, 380, H // 2
+            rounded_rect(frame, (pad, cy - card // 2),
+                         (pad + card, cy + card // 2), 3 * GRID, RAISED, -1)
+            rounded_rect(frame, (pad, cy - card // 2),
+                         (pad + card, cy + card // 2), 3 * GRID, HAIR, 1)
+            draw_gesture_anim(frame, pad + card // 8, cy - card // 2 + card // 8,
+                              int(card * 0.75), anim, now)
+            if r is not None:                       # your own hand, mirrored
+                small = 150
+                sx, sy = pad + card - small - 2 * GRID, cy + card // 2 - small - 2 * GRID
+                rounded_rect(frame, (sx, sy), (sx + small, sy + small),
+                             2 * GRID, INK, -1)
+                rounded_rect(frame, (sx, sy), (sx + small, sy + small),
+                             2 * GRID, HAIR, 1)
+                pts = [(int(sx + l.x * small), int(sy + l.y * small))
+                       for l in r[0]]
+                for i0, j0 in mp.solutions.hands.HAND_CONNECTIONS:
+                    cv2.line(frame, pts[i0], pts[j0], SILVER, 1, cv2.LINE_AA)
+
+            tx = pad + card + 6 * GRID
+            sf(frame, f"Setup  {phase_idx + 1} of 2", (tx, cy - 12 * GRID),
+               12.0, 0.3, GREY, 255, tracking=1.6)
+            sf(frame, title, (tx, cy - 7 * GRID), 34.0, 0.62, PAPER)
+            for i, line in enumerate(wrap_lines(how, 18.0, 0.1, W - tx - pad)):
+                sf(frame, line, (tx, cy - 2 * GRID + i * 4 * GRID), 18.0, 0.1,
+                   PAPER)
+            sf(frame, "Sleyth is learning which way your hand faces. It only "
+               "has to happen once.", (tx, cy + 5 * GRID), 15.0, 0.0, GREY)
+
+            # a 5-second ring: unmistakable, and it restarts if you drop out
+            rr, rx, ry = 26, tx + 26, cy + 13 * GRID
+            cv2.circle(frame, (rx, ry), rr, HAIR, 3, cv2.LINE_AA)
             if frac > 0:
-                cv2.line(frame, (40, 122), (40 + int(500 * frac), 122),
-                         PAPER, 3, cv2.LINE_AA)
-            seen_now = r is not None
-            cv2.circle(frame, (44, 152), 5, PAPER if seen_now else HAIR, -1,
-                       cv2.LINE_AA)
-            cv2.putText(frame, "hand detected - hold it steady" if seen_now
-                        else "no hand yet - hold it up, well lit",
-                        (60, 157), FONT, 0.5, PAPER if seen_now else SILVER, 1,
-                        cv2.LINE_AA)
-            cv2.putText(frame, "q to cancel", (frame.shape[1] - 160, 157),
-                        FONT, 0.45, GREY, 1, cv2.LINE_AA)
+                cv2.ellipse(frame, (rx, ry), (rr, rr), -90, 0,
+                            int(360 * frac), PAPER, 3, cv2.LINE_AA)
+            left = max(0.0, seconds - (now - t0)) if t0 else seconds
+            sf(frame, f"{left:.0f}", (rx, ry), 20.0, 0.5, PAPER,
+               align="center")
+            sf(frame, "hold it there" if t0 else
+               ("hold your hand up, well lit"),
+               (rx + 5 * GRID, ry), 15.0, 0.3,
+               PAPER if t0 else SILVER)
+            sf(frame, "esc to cancel", (W - 5 * GRID, H - 4 * GRID), 12.0,
+               0.0, GREY, 150, align="right")
+
             cv2.imshow("Sleyth", frame)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            k = cv2.waitKey(1) & 0xFF
+            if k in (ord("q"), 27):
                 return "quit"
             if done:
                 means.append(sum(samples) / len(samples))
