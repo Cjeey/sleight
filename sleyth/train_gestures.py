@@ -1,7 +1,7 @@
 """
-Teach Sleight YOUR hand - about 3 minutes, once.
+Teach Sleyth YOUR hand - about 3 minutes, once.
 
-Sleight's built-in pose rules are geometry I wrote by hand ("a finger counts
+Sleyth's built-in pose rules are geometry I wrote by hand ("a finger counts
 as extended if its tip is farther from the wrist than its middle joint").
 Those rules are generic. Your hand is not.
 
@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import sleight as sl                                          # noqa: E402
+import sleyth as sl                                          # noqa: E402
 
 SECONDS = 6.0
 TARGET_PER_POSE = 130
@@ -52,8 +52,8 @@ def main():
     styles = __import__("mediapipe").solutions.drawing_styles
     aspect = sl.CAM_W / sl.CAM_H
 
-    cv2.namedWindow("Sleight - training", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Sleight - training", 960, 540)
+    cv2.namedWindow("Sleyth - training", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Sleyth - training", 960, 540)
 
     X, y = [], []
     print(__doc__)
@@ -72,7 +72,7 @@ def main():
             sl.draw_text(frame, hint, (30, 100), 0.6, sl.WHITE, 2)
             sl.draw_text(frame, f"starting in {ready_until - time.time():.0f}",
                          (30, h - 40), 1.0, sl.GREEN, 3)
-            cv2.imshow("Sleight - training", frame)
+            cv2.imshow("Sleyth - training", frame)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 cam.release(); cv2.destroyAllWindows(); sys.exit("cancelled")
 
@@ -101,7 +101,7 @@ def main():
             sl.draw_text(frame, f"RECORDING  {title}", (30, 60), 0.8, sl.GREEN, 2)
             sl.draw_text(frame, hint, (30, 100), 0.6, sl.WHITE, 2)
             sl.draw_text(frame, f"{got} samples", (30, h - 74), 0.6, sl.WHITE, 2)
-            cv2.imshow("Sleight - training", frame)
+            cv2.imshow("Sleyth - training", frame)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 cam.release(); cv2.destroyAllWindows(); sys.exit("cancelled")
         print(f"  {label}: {got} samples")

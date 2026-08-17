@@ -1,5 +1,5 @@
 """
-The glass layer: a real macOS floating widget for Sleight.
+The glass layer: a real macOS floating widget for Sleyth.
 
 OpenCV can only give us an opaque rectangle with a title bar. A product-grade
 dock widget needs the opposite of that - no chrome, a transparent background,

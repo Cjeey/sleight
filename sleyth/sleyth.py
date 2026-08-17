@@ -1,5 +1,5 @@
 """
-Sleight v7.8 - trackpad in the air.
+Sleyth v7.8 - trackpad in the air.
 
 Gestures (after summoning):
 
@@ -49,8 +49,12 @@ import glass                                                    # noqa: E402
 
 try:
     import mediapipe as mp
-except ImportError:
-    sys.exit("mediapipe missing. Run: ./run.sh (it installs requirements)")
+except ImportError as e:
+    # print the REAL reason: inside a packaged .app "missing" is almost never
+    # the truth, and the generic message sends you hunting the wrong problem
+    import traceback
+    traceback.print_exc()
+    sys.exit(f"mediapipe did not load ({e}). From source, run ./run.sh")
 
 try:
     import Quartz
@@ -66,7 +70,7 @@ except ImportError:
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "sleight_config.json")
+CONFIG_PATH = os.path.join(HERE, "sleyth_config.json")
 
 CAM_INDEX = 0
 CAM_W, CAM_H = 1280, 720
@@ -334,11 +338,15 @@ DEFAULT_CONFIG = {
 
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
-    try:
-        with open(CONFIG_PATH) as f:
-            cfg.update(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+    paths = [CONFIG_PATH,
+             os.path.join(HERE, "sleight_config.json")]   # pre-rename name
+    for p in paths:
+        try:
+            with open(p) as f:
+                cfg.update(json.load(f))
+            break                       # a calibration is too painful to lose
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
     # a mapping outside the safe action set silently no-ops in the injector
     # while still counting swipes + playing sounds - reject it here instead
     for k in ("swipe_left_key", "swipe_right_key"):
@@ -1219,7 +1227,7 @@ class Injector:
             if not self.trusted:
                 print("\n!! Accessibility permission missing - running DRY-RUN.")
                 print("   System Settings > Privacy & Security > Accessibility ->")
-                print("   enable your terminal app, then restart Sleight.\n")
+                print("   enable your terminal app, then restart Sleyth.\n")
                 self.dry = True
 
     @staticmethod
@@ -1242,7 +1250,7 @@ class Injector:
         self.trusted = self._check_trust(prompt=False)
         if not self.trusted:
             print("!! Cannot go LIVE: Accessibility still not granted. Grant it "
-                  "in System Settings, then RESTART Sleight.")
+                  "in System Settings, then RESTART Sleyth.")
             self.dry = True
             return True
         self.dry = False
@@ -1377,7 +1385,7 @@ class Injector:
 
 # --------------------------------------------------------------------------- app
 
-class Sleight:
+class Sleyth:
     IDLE, ARMED = "IDLE", "ARMED"
 
     def __init__(self, cfg, injector, aspect=CAM_W / CAM_H):
@@ -1405,7 +1413,7 @@ class Sleight:
                       "scroll_frames": 0, "pointer_frames": 0}
         self.session_start = time.time()
         self.log_path = os.path.join(
-            HERE, f"sleight_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
+            HERE, f"sleyth_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
 
     def _soft_reset(self):
         """Hand momentarily lost. Deliberately does NOT clear the flick
@@ -1591,7 +1599,7 @@ class Sleight:
         s = self.stats
         rate = s["arms_no_action"] / mins * 20 if mins > 0.5 else 0.0
         print("\n" + "=" * 62)
-        print("  SLEIGHT v7.8 - SESSION REPORT")
+        print("  SLEYTH v7.8 - SESSION REPORT")
         print("=" * 62)
         print(f"  duration            {mins:.1f} min")
         print(f"  arms                {s['arms']}")
@@ -1676,7 +1684,7 @@ def draw_hud(frame, app, toast, now, w, h):
     cv2.rectangle(band, (0, h - 110), (w - 330, h), (0, 0, 0), -1)
     cv2.addWeighted(band, 0.72, frame, 0.28, 0, frame)
 
-    if app.state == Sleight.ARMED:
+    if app.state == Sleyth.ARMED:
         cv2.rectangle(frame, (1, 1), (w - 2, h - 2), PAPER, 2)
         draw_tracked(frame, "ARMED", (24, 52), 0.8, PAPER, 1, tracking=14,
                      halo=True)
@@ -1756,17 +1764,17 @@ def place_window(view, pos="center"):
     if view == "hidden":
         # the glass widget is doing the talking - park the plain window where
         # nobody has to look at it
-        cv2.moveWindow("Sleight", -4000, -4000)
+        cv2.moveWindow("Sleyth", -4000, -4000)
     elif view == "panel":
-        cv2.resizeWindow("Sleight", PANEL_W, PANEL_H)
+        cv2.resizeWindow("Sleyth", PANEL_W, PANEL_H)
         y = max(0, sh - PANEL_H - PILL_GAP_BOTTOM)
         if pos == "right":
-            cv2.moveWindow("Sleight", max(0, sw - PANEL_W - 24), y)
+            cv2.moveWindow("Sleyth", max(0, sw - PANEL_W - 24), y)
         else:                                        # bottom-center (default)
-            cv2.moveWindow("Sleight", max(0, (sw - PANEL_W) // 2), y)
+            cv2.moveWindow("Sleyth", max(0, (sw - PANEL_W) // 2), y)
     else:
-        cv2.resizeWindow("Sleight", 960, 540)
-        cv2.moveWindow("Sleight", max(0, (sw - 960) // 2), 60)
+        cv2.resizeWindow("Sleyth", 960, 540)
+        cv2.moveWindow("Sleyth", max(0, (sw - 960) // 2), 60)
 
 
 _PILL = {"xy": None, "t": 0.0, "energy": 0.0}
@@ -1809,7 +1817,7 @@ def _pill_energy(obs, now):
 # --------------------------------------------------------------------------- glass widget
 
 # The floating widget. It is COLLAPSED (a bare nub) until a hand appears, then
-# it grows into the full pill - you should not have to look at Sleight until
+# it grows into the full pill - you should not have to look at Sleyth until
 # you are actually talking to it.
 GLASS_W, GLASS_H = 520, 132      # the invisible canvas, in points
 NUB = 38                         # collapsed: a CIRCLE, width == height, so
@@ -1893,7 +1901,7 @@ def render_pill_rgba(app, obs, active, toast, now, lms, ui, scale=2):
     W, H = GLASS_W * S, GLASS_H * S
     c = np.zeros((H, W, 4), dtype=np.uint8)
 
-    armed = app.state == Sleight.ARMED
+    armed = app.state == Sleyth.ARMED
     seen = obs is not None
     # what the widget is trying to say, right now, in one word
     if toast:
@@ -2040,7 +2048,7 @@ def render_panel(app, obs, active, toast, now, thumb=None, lms=None):
     c = np.full((PANEL_H * S, PANEL_W * S, 3), INK[0], dtype=np.uint8)
     x0, y0, x1, y1 = (v * S for v in PILL)
     mw, mh = MAP_W * S, MAP_H * S
-    armed = app.state == Sleight.ARMED
+    armed = app.state == Sleyth.ARMED
     seen = obs is not None
     cy = (y0 + y1) // 2
     rounded_rect(c, (x0, y0), (x1, y1), (y1 - y0) // 2, SURFACE, -1)
@@ -2078,7 +2086,7 @@ def render_panel(app, obs, active, toast, now, thumb=None, lms=None):
         draw_tracked(c, hint or "READY", (wx, cy + 6 * S), 0.55 * S,
                      SILVER if hint is None else PAPER, S, tracking=8)
     else:
-        draw_serif(c, "Sleight", (wx, cy + 8 * S), 0.75 * S, GREY, S)
+        draw_serif(c, "Sleyth", (wx, cy + 8 * S), 0.75 * S, GREY, S)
 
     # -- alarm chip: DRY (inverted = loudest) or EDGE (clicks paused)
     chx1 = x1 - 30 * S - mw - 12 * S
@@ -2202,7 +2210,7 @@ class Tutorial:
                      PAPER, 2, cv2.LINE_AA)
         cv2.putText(frame, "n skip   t exit", (w - 200, h - 24), FONT, 0.45,
                     GREY, 1, cv2.LINE_AA)
-        if app.state != Sleight.ARMED and self.idx > 0:
+        if app.state != Sleyth.ARMED and self.idx > 0:
             cv2.putText(frame, "summon first: open palm + hold still",
                         (24, h - 142), FONT, 0.5, SILVER, 1, cv2.LINE_AA)
         if now < self.flash_until:
@@ -2347,7 +2355,7 @@ def run_calibration(cap, engine, cfg, aspect):
                         cv2.LINE_AA)
             cv2.putText(frame, "q to cancel", (frame.shape[1] - 160, 157),
                         FONT, 0.45, GREY, 1, cv2.LINE_AA)
-            cv2.imshow("Sleight", frame)
+            cv2.imshow("Sleyth", frame)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 return "quit"
             if done:
@@ -2394,10 +2402,10 @@ def main():
     drawer = mp.solutions.drawing_utils
     styles = mp.solutions.drawing_styles
 
-    cv2.namedWindow("Sleight", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Sleight", 960, 540)
+    cv2.namedWindow("Sleyth", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Sleyth", 960, 540)
     try:
-        cv2.setWindowProperty("Sleight", cv2.WND_PROP_TOPMOST, 1)
+        cv2.setWindowProperty("Sleyth", cv2.WND_PROP_TOPMOST, 1)
     except cv2.error:
         pass
 
@@ -2414,9 +2422,9 @@ def main():
             if r == "quit":
                 cam.release()
                 cv2.destroyAllWindows()
-                sys.exit("Calibration cancelled - Sleight needs it to run.")
+                sys.exit("Calibration cancelled - Sleyth needs it to run.")
 
-    app = Sleight(cfg, injector, aspect)
+    app = Sleyth(cfg, injector, aspect)
     app.log({"event": "session_start", "config": cfg, "dry_run": injector.dry})
     print(__doc__)
     last_tick = 0.0
@@ -2440,7 +2448,7 @@ def main():
         GLASS_W, GLASS_H, PILL_GAP_BOTTOM,
         menu=[("Full view / settings", "f"), ("Reset position", "p"),
               ("Tutorial", "t"), ("Recalibrate", "c"), ("-", ""),
-              ("Quit Sleight", "q")],
+              ("Quit Sleyth", "q")],
         on_menu=lambda k: menu_cmds.append(k),
         on_drop=remember_widget,
         origin=tuple(saved_xy) if isinstance(saved_xy, (list, tuple))
@@ -2552,8 +2560,8 @@ def main():
 
         if now >= toast_until:
             toast = None
-        active = app.pose_stab.current if (obs and app.state == Sleight.ARMED) else None
-        if app.state == Sleight.ARMED and app.pincher.state != PinchTracker.OPEN:
+        active = app.pose_stab.current if (obs and app.state == Sleyth.ARMED) else None
+        if app.state == Sleyth.ARMED and app.pincher.state != PinchTracker.OPEN:
             active = "hold" if app.pincher.state == PinchTracker.DRAG else "pinch"
 
         if view == "full":
@@ -2572,7 +2580,7 @@ def main():
                         (w - 630, 36), FONT, 0.45, GREY, 1, cv2.LINE_AA)
             if tutorial is not None:
                 tutorial.draw(frame, app, now, w, h)
-            cv2.imshow("Sleight", frame)
+            cv2.imshow("Sleyth", frame)
         elif pill.ok:
             rgba, rect, chip = render_pill_rgba(app, obs, active, toast, now,
                                                 hand_lms, pill_ui,
@@ -2584,7 +2592,7 @@ def main():
             pill.update_hit([rect] + ([chip] if chip else []))
             pill.tick(0.0)
         else:
-            cv2.imshow("Sleight", render_panel(app, obs, active, toast, now,
+            cv2.imshow("Sleyth", render_panel(app, obs, active, toast, now,
                                                lms=hand_lms))
 
         k = cv2.waitKey(1) & 0xFF

@@ -1,9 +1,9 @@
-"""Headless logic tests for sleight.py - no camera, no Quartz posting."""
+"""Headless logic tests for sleyth.py - no camera, no Quartz posting."""
 import importlib.util
 import math
 import time
 
-spec = importlib.util.spec_from_file_location("sl", __file__.replace("tests.py", "sleight.py"))
+spec = importlib.util.spec_from_file_location("sl", __file__.replace("tests.py", "sleyth.py"))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
@@ -262,7 +262,7 @@ assert fired4 == ["pos"], f"fast peaked flick: {fired4}"
 print("4d. fast peaked flick fires OK")
 
 # 4e. one-frame tracking dropout mid-flick must NOT kill the stroke (app level)
-appd = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+appd = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 appd.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(appd, obs("palm"), 60, t)
@@ -474,7 +474,7 @@ assert ptk3.update(None, t3) == ["up"]
 print("6b. click-on-contact / middle-hold / collapse-tolerant OK")
 
 # ---- 6c. a fist does NOTHING while armed (no disarm gesture exists)
-appf = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+appf = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 appf.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(appf, obs("palm"), 60, t)
@@ -513,7 +513,7 @@ else:
 print("7. injector guards + config validation OK")
 
 # ---- 8. full pipeline: arm -> point -> click -> scroll -> flick -> fist
-app = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 app.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(app, obs("palm"), 60, t)
@@ -578,7 +578,7 @@ assert app.stats["arms"] == 1 and app.stats["arms_no_action"] == 0
 print("8. pipeline arm->point->click->scroll->flick->timeout OK")
 
 # ---- 9. the CLUTCH: returning to the middle in a non-scroll pose = no scroll
-app2 = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app2 = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 app2.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(app2, obs("palm"), 60, t)
@@ -601,7 +601,7 @@ assert len(after_posts) <= 3 and sum(abs(p[1]) for p in after_posts) < 10, \
 print("9. clutch: return trip scrolls ~nothing OK")
 
 # ---- 10. flick -> momentum coast, cancelled by re-grip
-app3 = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app3 = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 app3.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(app3, obs("palm"), 60, t)
@@ -624,7 +624,7 @@ assert not app3.scroll.coasting
 print("10. flick momentum + re-grip cancel OK")
 
 # ---- 11. x-mark attribution + arm_end logging fields
-app4 = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app4 = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 app4.gate.last_fail_t = BASE - 10
 app4.log = lambda payload: logged.append(payload)
 logged = []
@@ -638,7 +638,7 @@ assert ends and ends[0]["x_marked"] is True and ends[0]["actions"] == 0
 print("11. x-mark attribution + arm_end log OK")
 
 # ---- 12. separation: cursor pose never scrolls, scroll pose never flicks
-app5 = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app5 = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 app5.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(app5, obs("palm"), 60, t)
@@ -689,7 +689,7 @@ for _ in range(5):
     tut2.skip_step(t)
 assert tut2.done
 import numpy as _np
-app6 = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app6 = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 canvas = m.render_panel(app6, None, None, None, BASE)          # no camera
 assert canvas.shape == (m.PANEL_H * m.PILL_SS, m.PANEL_W * m.PILL_SS, 3)
 fake_cam = _np.full((720, 1280, 3), 90, dtype=_np.uint8)
@@ -746,7 +746,7 @@ assert inj2.target is None
 print("14. glide + wheel smoother + cursor release OK")
 
 # ---- 15. pointing is latched: a curled hand keeps steering
-appc = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+appc = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 appc.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(appc, obs("palm"), 60, t)
@@ -885,7 +885,7 @@ assert "down" in evs, f"clear pinky touch did not hold: {evs}"
 print("18. ties -> click, resting curl inert, pinky hold works OK")
 
 # ---- 19. showing the palm to stop pointing cannot hit Back
-appp = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+appp = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 appp.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(appp, obs("palm"), 60, t)
@@ -955,7 +955,7 @@ assert ph.update(o_rel, t) == ["up"]
 print("21. hold: fast as click, jitter-proof drag, clean release OK")
 
 # ---- 22. a hold OWNS the hand: palm-looking grabs keep the dot, block others
-apg = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+apg = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 apg.gate.last_fail_t = BASE - 10
 t = BASE
 evs, t = drive(apg, obs("palm"), 60, t)
@@ -1169,7 +1169,7 @@ assert m.summon_hint(g_ch) == "DISTANCE", "no scale -> generic wording"
 print("27. chirality guard cannot lock out a real palm + summon coaching OK")
 
 # ---- 28. the glass widget: collapsed until a hand shows up
-app_g = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app_g = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 ui = m.PillUI()
 t = BASE
 lm_g, _w = mk_hand("point", 0.5, 0.45)
@@ -1237,7 +1237,7 @@ assert abs(cap[2] - m.NUB) < 2, "widget must collapse when the hand leaves"
 
 # the capsule sizes itself to the WORD - a long instruction must not spill out
 # (a capsule cut for "CLICK" would clip "CENTER HAND")
-app_w = m.Sleight(cfg_ok(), m.Injector(dry_run=True))
+app_w = m.Sleyth(cfg_ok(), m.Injector(dry_run=True))
 app_w.gate.conditions = {"POSE": True, "STILL": True, "PALM": True,
                          "CENTER": False, "SIZE": True}
 ui2 = m.PillUI()
@@ -1300,4 +1300,4 @@ assert r[0] > 0.98, f"precision assist blocked the screen edge: {r[0]:.3f}"
 print("29. precision assist: fine when slow, 1:1 when fast, edges reachable OK")
 
 print()
-print("ALL SLEIGHT v7.8 TESTS PASSED")
+print("ALL SLEYTH v7.8 TESTS PASSED")
