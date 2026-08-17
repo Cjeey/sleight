@@ -688,6 +688,16 @@ class PoseStabilizer:
 # --------------------------------------------------------------------------- learned poses
 
 GESTURE_MODEL = os.path.join(SUPPORT, "gesture_model.npz")
+
+
+def model_path():
+    """Where a trained hand-model may live. Training writes to the first;
+    a model left beside the source is still honoured, so packaging the app
+    never silently downgrades someone to the generic rules."""
+    for p in (GESTURE_MODEL, os.path.join(HERE, "gesture_model.npz")):
+        if os.path.exists(p):
+            return p
+    return GESTURE_MODEL
 POSE_LABELS = ["point", "two", "palm", "fist", "other"]
 KNN_K = 7
 KNN_MAX_DIST = 1.35            # farther than this = "I don't recognise this"
@@ -722,11 +732,11 @@ class GestureClassifier:
     train_gestures.py. Pure numpy - no TensorFlow, no cloud, no dataset
     licence to worry about. Falls back silently when unsure."""
 
-    def __init__(self, path=GESTURE_MODEL):
+    def __init__(self, path=None):
         self.ok = False
         self.n = 0
         try:
-            d = np.load(path, allow_pickle=True)
+            d = np.load(path or model_path(), allow_pickle=True)
             self.X, self.y = d["X"], d["y"]
             self.labels = [str(x) for x in d["labels"]]
             self.n = len(self.X)
@@ -2184,21 +2194,59 @@ _CLIPS = {}                       # kind -> list[frame] | None (miss cached)
 
 
 def clip_dirs():
-    return [os.path.join(SUPPORT, "gestures"), os.path.join(HERE, "gestures")]
+    """Your own recordings win; the ones shipped inside the .app are the
+    fallback. _MEIPASS is included explicitly - never assume __file__ points
+    where the bundle actually unpacked."""
+    dirs = [os.path.join(SUPPORT, "gestures"), os.path.join(HERE, "gestures")]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        dirs.append(os.path.join(meipass, "gestures"))
+    seen, out = set(), []
+    for d in dirs:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+CLIP_HAND_FRAC = 0.60          # how much of the chip the HAND itself fills
+CLIP_TRAVEL_MAX = 0.30         # how far it may wander inside the chip
 
 
 def normalize_clip(frames, margin=0.10):
-    """Fit the WHOLE sequence into the unit box with one uniform transform.
-    Per-frame fitting would delete the very thing being taught - the hand's
-    own travel across the frame."""
-    xs = [p[0] for f in frames for p in f]
-    ys = [p[1] for f in frames for p in f]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    span = max(x1 - x0, y1 - y0) or 1.0
-    sc = (1.0 - 2 * margin) / span
-    ox = margin + (1.0 - 2 * margin - (x1 - x0) * sc) / 2 - x0 * sc
-    oy = margin + (1.0 - 2 * margin - (y1 - y0) * sc) / 2 - y0 * sc
-    return [[(p[0] * sc + ox, p[1] * sc + oy) for p in f] for f in frames]
+    """Scale by the HAND's size, not the whole sequence's bounding box.
+
+    Fitting the sequence box shrinks the hand in proportion to how far it
+    travelled - a big swipe rendered a hand too small to read. Instead: fix
+    the hand at a legible size, then DAMP its travel so the motion is still
+    visible but never costs legibility. A uniform transform per axis, so
+    running this twice is harmless (old clips get fixed on load)."""
+    if not frames:
+        return []
+    # typical hand size = median frame extent, robust to a bad frame
+    spans = sorted(max(max(p[0] for p in f) - min(p[0] for p in f),
+                       max(p[1] for p in f) - min(p[1] for p in f))
+                   for f in frames)
+    hand = spans[len(spans) // 2] or 1.0
+    sc = CLIP_HAND_FRAC / hand
+
+    cen = [(sum(p[0] for p in f) / len(f), sum(p[1] for p in f) / len(f))
+           for f in frames]
+    mx = sum(c[0] for c in cen) / len(cen)
+    my = sum(c[1] for c in cen) / len(cen)
+    tx = (max(c[0] for c in cen) - min(c[0] for c in cen)) * sc
+    ty = (max(c[1] for c in cen) - min(c[1] for c in cen)) * sc
+    damp = min(1.0, CLIP_TRAVEL_MAX / max(tx, ty)) if max(tx, ty) > 1e-6 else 1.0
+
+    out = []
+    for f, (cx, cy) in zip(frames, cen):
+        # hand drawn at full scale about its own centre; the centre itself
+        # moves only `damp` as far
+        ox = 0.5 + (cx - mx) * sc * damp
+        oy = 0.5 + (cy - my) * sc * damp
+        out.append([(min(1.0, max(0.0, (p[0] - cx) * sc + ox)),
+                     min(1.0, max(0.0, (p[1] - cy) * sc + oy))) for p in f])
+    return out
 
 
 def resample_clip(frames, n=CLIP_FRAMES):
@@ -2228,7 +2276,10 @@ def load_clip(kind):
                 data = json.load(f)
             frames = data.get("frames", [])
             if len(frames) >= 8 and all(len(fr) == 21 for fr in frames):
-                clip = frames
+                # re-normalize on load: clips recorded before the hand-size
+                # rule were squashed by their own travel, and the transform
+                # is uniform so re-applying it recovers a legible hand
+                clip = normalize_clip(frames)
                 break
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
             continue
@@ -2256,10 +2307,13 @@ def draw_clip(img, x, y, size, clip, now, color=PAPER):
     pts = [(int(x + (p0[0] * (1 - w) + p1[0] * w) * size),
             int(y + (p0[1] * (1 - w) + p1[1] * w) * size))
            for p0, p1 in zip(clip[a], clip[a + 1])]
+    # stroke scales with the chip: a 1px skeleton reads as a scratch, not a
+    # hand, at tutorial size
+    th = max(2, int(round(size / 64.0)))
     for i, j in mp.solutions.hands.HAND_CONNECTIONS:
-        cv2.line(img, pts[i], pts[j], color, 1, cv2.LINE_AA)
+        cv2.line(img, pts[i], pts[j], color, th, cv2.LINE_AA)
     for tip in (4, 8, 12, 16, 20):
-        cv2.circle(img, pts[tip], 3, color, -1, cv2.LINE_AA)
+        cv2.circle(img, pts[tip], th + 2, color, -1, cv2.LINE_AA)
 
 
 def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2):
@@ -2661,7 +2715,28 @@ def run_calibration(cap, engine, cfg, aspect):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--check", action="store_true",
+                    help="print what this build can see, then exit")
     args = ap.parse_args()
+
+    if args.check:
+        # a tester who says "it doesn't work" can send this instead of a guess
+        print(f"Sleyth {'packaged' if FROZEN else 'from source'}")
+        print(f"  settings   {SUPPORT}")
+        print(f"  model      {'found' if os.path.exists(os.path.join(HERE, 'hand_landmarker.task')) else 'MISSING'}")
+        print(f"  your poses {model_path() if os.path.exists(model_path()) else 'built-in rules'}")
+        for d in clip_dirs():
+            n = len([f for f in os.listdir(d) if f.endswith('.json')]) \
+                if os.path.isdir(d) else 0
+            print(f"  clips      {n} in {d}")
+        found = [k for k in ("palm", "point", "click", "two", "hold", "flick")
+                 if load_clip(k)]
+        print(f"  tutorial   {len(found)}/6 recorded: {' '.join(found) or '-'}")
+        trust = Injector._check_trust(prompt=False)
+        print(f"  accessibility {'GRANTED' if trust else 'NOT granted'}")
+        if "/AppTranslocation/" in sys.executable:
+            print("  !! running translocated - move the app to Applications")
+        return
 
     cfg = load_config()
     injector = Injector(dry_run=args.dry_run)
