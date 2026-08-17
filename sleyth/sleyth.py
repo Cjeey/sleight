@@ -1330,7 +1330,13 @@ class Injector:
             except Exception:
                 self.src = None
         if not self.dry:
-            self.trusted = self._check_trust(prompt=True)
+            # prompt=False: the system dialog nagged on EVERY launch, because
+            # an ad-hoc signature changes with each build and macOS treats it
+            # as a different app - so an already-granted Sleyth still reads as
+            # untrusted. The widget shows DRY and the menu has an explicit
+            # "Grant Accessibility..." item; a dialog you cannot satisfy is
+            # worse than no dialog.
+            self.trusted = self._check_trust(prompt=False)
             if not self.trusted:
                 print("\n!! Accessibility permission missing - running DRY-RUN.")
                 print("   System Settings > Privacy & Security > Accessibility ->")
@@ -2920,12 +2926,22 @@ def main():
     drawer = mp.solutions.drawing_utils
     styles = mp.solutions.drawing_styles
 
-    cv2.namedWindow("Sleyth", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Sleyth", 960, 540)
-    try:
-        cv2.setWindowProperty("Sleyth", cv2.WND_PROP_TOPMOST, 1)
-    except cv2.error:
-        pass
+    # The OpenCV window is created ONLY when the full view is opened.
+    # Creating it eagerly promoted Sleyth to a normal app: an empty dark
+    # slate sitting on screen AND a Dock icon whose Quit our loop never
+    # sees. The glass widget is the whole UI now.
+    cv_ready = [False]
+
+    def ensure_cv_window():
+        if cv_ready[0]:
+            return
+        cv_ready[0] = True
+        cv2.namedWindow("Sleyth", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Sleyth", 960, 540)
+        try:
+            cv2.setWindowProperty("Sleyth", cv2.WND_PROP_TOPMOST, 1)
+        except cv2.error:
+            pass
 
     aspect = CAM_W / CAM_H
     if cfg["palm_sign"] != 0.0 and not cfg.get("calibrated_hand"):
@@ -2982,8 +2998,11 @@ def main():
         view, the plain window owns settings/tutorial/calibration."""
         vv = view if v is None else v
         pos = cfg.get("panel_pos", "center")
+        if vv != "panel" or not pill.ok:
+            ensure_cv_window()            # only now does OpenCV get a window
         if vv == "panel" and pill.ok:
-            place_window("hidden")
+            if cv_ready[0]:
+                place_window("hidden")
             xy = cfg.get("widget_xy")
             if isinstance(xy, (list, tuple)) and len(xy) == 2:
                 pill.set_origin(*xy)      # wherever you last put it
@@ -3043,9 +3062,14 @@ def main():
             # straight past the paint, so if the camera delivered no frames
             # the window existed but was never drawn into - a running app,
             # correctly placed, showing absolutely nothing.
-            if view == "panel" and pill.ok and now - last_paint > 1 / 60.0:
+            # Only paint the boot state while there has been NO first frame,
+            # or once the camera has genuinely stalled. Painting it on every
+            # idle iteration overwrote the live widget ~3x more often than
+            # the real one drew - which is why it looked stuck on STARTING.
+            stalled = first_frame_logged[0] and now - last_frame_t > 3.0
+            if (view == "panel" and pill.ok and now - last_paint > 1 / 30.0
+                    and (not first_frame_logged[0] or stalled)):
                 last_paint = now
-                stalled = now - last_frame_t > 3.0
                 if stalled and not stall_logged[0]:
                     stall_logged[0] = True
                     runlog("camera opened but delivers NO FRAMES")
