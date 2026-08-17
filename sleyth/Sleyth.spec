@@ -59,8 +59,8 @@ app = BUNDLE(
             "leaves your Mac and is never recorded.",
         "NSMicrophoneUsageDescription": "Not used.",
         "LSMinimumSystemVersion": "12.0",
-        "CFBundleShortVersionString": "7.8",
-        "CFBundleVersion": "7.8",
+        "CFBundleShortVersionString": "7.9",
+        "CFBundleVersion": "7.9",
         "LSApplicationCategoryType": "public.app-category.utilities",
         # accessory: no Dock icon, the widget and menu bar ARE the app
         "LSUIElement": True,

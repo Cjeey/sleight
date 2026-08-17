@@ -669,23 +669,42 @@ assert sum(1 for p in app5.injector.posted if p[0] == "scroll") == sb2, \
     "palm motion scrolled!"
 print("12. point=cursor, two=scroll, palm=flick separation OK")
 
-# ---- 13. tutorial progression + panel render
+# ---- 13. tutorial: gated reps + panel render
 tut = m.Tutorial()
 t = BASE
 tut.update(["arm"], t)
 assert tut.idx == 1
-for _ in range(20):
+for _ in range(25):
     tut.update(["pointer"], t)
 assert tut.idx == 2, tut.idx
+# ONE click must not pass the click lesson - it takes three
 tut.update(["click"], t)
-assert tut.idx == 3
-for _ in range(12):
+assert tut.idx == 2 and tut.count == 1, "one click should not advance"
+tut.update(["click"], t)
+tut.update(["click"], t)
+assert tut.idx == 3, tut.idx
+# scroll counts WAVES (activity separated by a pause), not frames: a single
+# long swipe of 30 frames is one wave, not a completed lesson
+for _ in range(30):
     tut.update(["scroll"], t)
+    t += DT / 3
+assert tut.count == 1, f"one continuous swipe must be ONE wave: {tut.count}"
+t += 1.0
+for _ in range(3):
+    tut.update(["scroll"], t)
+    t += DT
+t += 1.0
+tut.update(["scroll"], t)
+assert tut.idx == 4, (tut.idx, tut.count)
+# hold needs the FULL cycle: grab alone is nothing, release completes it
+tut.update(["drag_start"], t)
 assert tut.idx == 4
+tut.update(["drag_end"], t)
+assert tut.idx == 5
 tut.update(["swipe_left"], t)
 assert tut.done
 tut2 = m.Tutorial()                                       # manual skip path
-for _ in range(5):
+for _ in range(len(m.Tutorial.STEPS)):
     tut2.skip_step(t)
 assert tut2.done
 import numpy as _np
@@ -1300,4 +1319,4 @@ assert r[0] > 0.98, f"precision assist blocked the screen edge: {r[0]:.3f}"
 print("29. precision assist: fine when slow, 1:1 when fast, edges reachable OK")
 
 print()
-print("ALL SLEYTH v7.8 TESTS PASSED")
+print("ALL SLEYTH v7.9 TESTS PASSED")

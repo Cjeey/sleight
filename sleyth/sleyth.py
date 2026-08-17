@@ -1,5 +1,5 @@
 """
-Sleyth v7.8 - trackpad in the air.
+Sleyth v7.9 - trackpad in the air.
 
 Gestures (after summoning):
 
@@ -70,7 +70,18 @@ except ImportError:
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "sleyth_config.json")
+
+# Inside the packaged .app, HERE is read-only (and with App Translocation it
+# is a different random path every launch) - anything the app WRITES must
+# live in the user's own space, or config saves crash and calibration is
+# lost on every run.
+FROZEN = bool(getattr(sys, "frozen", False))
+if FROZEN:
+    SUPPORT = os.path.expanduser("~/Library/Application Support/Sleyth")
+    os.makedirs(SUPPORT, exist_ok=True)
+else:
+    SUPPORT = HERE
+CONFIG_PATH = os.path.join(SUPPORT, "sleyth_config.json")
 
 CAM_INDEX = 0
 CAM_W, CAM_H = 1280, 720
@@ -339,6 +350,7 @@ DEFAULT_CONFIG = {
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
     paths = [CONFIG_PATH,
+             os.path.join(HERE, "sleyth_config.json"),    # pre-.app location
              os.path.join(HERE, "sleight_config.json")]   # pre-rename name
     for p in paths:
         try:
@@ -675,7 +687,7 @@ class PoseStabilizer:
 
 # --------------------------------------------------------------------------- learned poses
 
-GESTURE_MODEL = os.path.join(HERE, "gesture_model.npz")
+GESTURE_MODEL = os.path.join(SUPPORT, "gesture_model.npz")
 POSE_LABELS = ["point", "two", "palm", "fist", "other"]
 KNN_K = 7
 KNN_MAX_DIST = 1.35            # farther than this = "I don't recognise this"
@@ -1413,7 +1425,8 @@ class Sleyth:
                       "scroll_frames": 0, "pointer_frames": 0}
         self.session_start = time.time()
         self.log_path = os.path.join(
-            HERE, f"sleyth_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
+            SUPPORT,
+            f"sleyth_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
 
     def _soft_reset(self):
         """Hand momentarily lost. Deliberately does NOT clear the flick
@@ -1599,7 +1612,7 @@ class Sleyth:
         s = self.stats
         rate = s["arms_no_action"] / mins * 20 if mins > 0.5 else 0.0
         print("\n" + "=" * 62)
-        print("  SLEYTH v7.8 - SESSION REPORT")
+        print("  SLEYTH v7.9 - SESSION REPORT")
         print("=" * 62)
         print(f"  duration            {mins:.1f} min")
         print(f"  arms                {s['arms']}")
@@ -2137,17 +2150,137 @@ def render_panel(app, obs, active, toast, now, thumb=None, lms=None):
 
 # --------------------------------------------------------------------------- tutorial
 
-class Tutorial:
-    """Interactive lessons, one gesture at a time. Runs in DRY-RUN so nothing
-    the learner does can touch the real system. Completion is detection-based:
-    the step advances when the gesture actually worked."""
+def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2):
+    """A schematic hand: palm + finger capsules. `fingers` is 4 tuples of
+    (extension 0..1, x-spread), thumb an (angle_deg, extension) or None.
+    Iconic on purpose - it must read as A HAND at a glance, in any language."""
+    palm_cy = int(cy + 0.22 * s)
+    cv2.ellipse(img, (int(cx), palm_cy), (int(0.30 * s), int(0.34 * s)),
+                0, 0, 360, color, thick, cv2.LINE_AA)
+    top_y = palm_cy - int(0.30 * s)
+    for (ext, sx) in fingers:
+        x = int(cx + sx * s)
+        ln = int((0.16 + 0.42 * ext) * s)
+        cv2.line(img, (x, top_y + int(0.06 * s)), (x, top_y - ln), color,
+                 thick, cv2.LINE_AA)
+        cv2.circle(img, (x, top_y - ln), thick + 1, color, -1, cv2.LINE_AA)
+    if thumb is not None:
+        ang, ext = thumb
+        a = math.radians(ang)
+        x0 = int(cx - 0.28 * s)
+        y0 = palm_cy - int(0.05 * s)
+        x1 = int(x0 - math.cos(a) * (0.18 + 0.30 * ext) * s)
+        y1 = int(y0 - math.sin(a) * (0.18 + 0.30 * ext) * s)
+        cv2.line(img, (x0, y0), (x1, y1), color, thick, cv2.LINE_AA)
+        cv2.circle(img, (x1, y1), thick + 1, color, -1, cv2.LINE_AA)
+        return (x1, y1)
+    return None
 
+
+def draw_gesture_anim(img, x, y, size, kind, now, color=PAPER):
+    """One gesture, performed on loop by the schematic hand. This is how the
+    tutorial teaches without language: you watch the hand DO it."""
+    t = (now % 1.8) / 1.8                       # one loop = 1.8s
+    cx, cy = x + size // 2, y + size // 2
+    s = size * 0.62
+    SPREAD = [(1.0, -0.20), (1.0, -0.07), (1.0, 0.07), (1.0, 0.20)]
+    CURLED = [(0.0, -0.20), (0.0, -0.07), (0.0, 0.07), (0.0, 0.20)]
+
+    if kind == "palm":                          # hold still; a ring closes
+        _hand_glyph(img, cx, cy, s, SPREAD, thumb=(20, 1.0), color=color)
+        cv2.ellipse(img, (cx, cy), (int(0.62 * s), int(0.62 * s)), -90,
+                    0, int(360 * t), color, 1, cv2.LINE_AA)
+    elif kind == "point":                       # one finger, hand sweeps
+        dx = int(0.22 * s * math.sin(2 * math.pi * t))
+        fingers = [(1.0, -0.20)] + CURLED[1:]
+        _hand_glyph(img, cx + dx, cy, s, fingers, thumb=(10, 0.3),
+                    color=color)
+        cv2.circle(img, (cx + dx - int(0.20 * s),
+                         cy - int(0.55 * s)), 3, color, -1, cv2.LINE_AA)
+    elif kind == "click":                       # thumb travels TO the index
+        close = 0.5 - 0.5 * math.cos(2 * math.pi * min(t / 0.7, 1.0))
+        fingers = [(1.0, -0.20)] + CURLED[1:]
+        _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=color)
+        index_tip = (cx - 0.20 * s, cy - 0.66 * s)
+        root = (cx - 0.28 * s, cy + 0.17 * s)
+        rest = (cx - 0.44 * s, cy + 0.02 * s)
+        tx_ = rest[0] + (index_tip[0] - rest[0]) * close
+        ty_ = rest[1] + (index_tip[1] + 0.06 * s - rest[1]) * close
+        cv2.line(img, (int(root[0]), int(root[1])), (int(tx_), int(ty_)),
+                 color, 2, cv2.LINE_AA)
+        cv2.circle(img, (int(tx_), int(ty_)), 3, color, -1, cv2.LINE_AA)
+        if close > 0.92:                        # the moment of contact
+            cv2.circle(img, (int(index_tip[0]), int(index_tip[1])),
+                       int(0.15 * s), color, 1, cv2.LINE_AA)
+    elif kind == "two":                         # two fingers, hand bobs
+        dy = int(0.20 * s * math.sin(2 * math.pi * t))
+        fingers = SPREAD[:2] + CURLED[2:]
+        _hand_glyph(img, cx, cy + dy, s, fingers, thumb=(10, 0.2),
+                    color=color)
+        ax = x + size - 14
+        cv2.arrowedLine(img, (ax, cy + 14), (ax, cy - 14), color, 1,
+                        tipLength=0.35)
+        cv2.arrowedLine(img, (ax, cy - 14), (ax, cy + 14), color, 1,
+                        tipLength=0.35)
+    elif kind == "hold":                        # thumb pinches the PINKY,
+        ph = t * 3.0                            # drags, releases
+        close = min(1.0, ph)                    # 0-0.33: close
+        drag = min(1.0, max(0.0, ph - 1.0))     # 0.33-0.66: move
+        open_ = min(1.0, max(0.0, ph - 2.0))    # 0.66-1: release
+        grip = close * (1 - open_)
+        dx = int(0.26 * s * drag)
+        hx = cx + dx
+        fingers = [(1.0, -0.20), (0.0, -0.07), (0.0, 0.07), (0.6, 0.20)]
+        _hand_glyph(img, hx, cy, s, fingers, thumb=None, color=color)
+        pinky_tip = (hx + 0.20 * s, cy - 0.50 * s)
+        root = (hx - 0.28 * s, cy + 0.17 * s)
+        rest = (hx - 0.44 * s, cy + 0.02 * s)
+        tx_ = rest[0] + (pinky_tip[0] - rest[0]) * grip
+        ty_ = rest[1] + (pinky_tip[1] + 0.06 * s - rest[1]) * grip
+        cv2.line(img, (int(root[0]), int(root[1])), (int(tx_), int(ty_)),
+                 color, 2, cv2.LINE_AA)
+        cv2.circle(img, (int(tx_), int(ty_)), 3, color, -1, cv2.LINE_AA)
+        if grip > 0.92:
+            cv2.circle(img, (int(pinky_tip[0]), int(pinky_tip[1])),
+                       int(0.13 * s), color, 1, cv2.LINE_AA)
+        if drag > 0 and open_ < 1:
+            cv2.line(img, (cx - int(0.05 * s), cy + int(0.66 * s)),
+                     (hx + int(0.05 * s), cy + int(0.66 * s)), color, 1,
+                     cv2.LINE_AA)
+    elif kind == "flick":                       # palm sweeps fast to the side
+        sweep = ease(min(1.0, max(0.0, (t - 0.35) / 0.3)))
+        dx = int(0.38 * s * sweep) - int(0.16 * s)
+        _hand_glyph(img, cx + dx, cy, s, SPREAD, thumb=(20, 1.0),
+                    color=color)
+        if 0.35 < t < 0.8:
+            for i in range(3):
+                lx = cx + dx - int((0.42 + 0.12 * i) * s)
+                cv2.line(img, (max(x + 6, lx - 10), cy - 8 + i * 8),
+                         (lx, cy - 8 + i * 8), color, 1, cv2.LINE_AA)
+    elif kind == "fist":                        # closed hand, tiny shake
+        wob = int(2 * math.sin(4 * math.pi * t))
+        _hand_glyph(img, cx + wob, cy, s, CURLED, thumb=(50, 0.15),
+                    color=color)
+    else:                                       # "free": loose wiggle
+        fingers = [(0.4 + 0.25 * math.sin(2 * math.pi * t + i), sx)
+                   for i, (_e, sx) in enumerate(SPREAD)]
+        _hand_glyph(img, cx, cy, s, fingers, thumb=(25, 0.5), color=color)
+
+
+class Tutorial:
+    """One gesture at a time, and the step does NOT advance until it has
+    been done for real, several times - one lucky click teaches nothing.
+    An animated hand performs each gesture on loop, so the lesson needs no
+    language. Runs in DRY-RUN: nothing the learner does touches the system."""
+
+    #        anim     title      instruction                          reps
     STEPS = [
-        ("Summon", "Open palm toward the camera, hold still ~1s"),
-        ("Move the cursor", "Point with 1 finger - move your hand"),
-        ("Click", "Touch thumb + index together - it clicks on contact"),
-        ("Scroll", "TWO fingers up - move your hand up/down"),
-        ("Back / Next", "Whole palm open - flick left or right, fast"),
+        ("palm",  "SUMMON", "hold your open palm still, like this",     1),
+        ("point", "MOVE",   "point with one finger - steer the dot",   25),
+        ("click", "CLICK",  "tap thumb and index together - 3 times",   3),
+        ("two",   "SCROLL", "two fingers - move up and down, 3 waves",  3),
+        ("hold",  "HOLD",   "pinch thumb and pinky, move, let go",      1),
+        ("flick", "SWIPE",  "open palm - flick fast to either side",    1),
     ]
 
     def __init__(self):
@@ -2155,6 +2288,7 @@ class Tutorial:
         self.count = 0
         self.done = False
         self.flash_until = 0.0
+        self._last_scroll = -1e9       # bursts, not frames: a wave = 1 rep
 
     def skip_step(self, now):
         self._advance(now)
@@ -2169,25 +2303,31 @@ class Tutorial:
     def update(self, events, now):
         if self.done:
             return
-        i = self.idx
-        if i == 0 and "arm" in events:
-            self._advance(now)
-        elif i == 1:
+        kind = self.STEPS[self.idx][0]
+        if kind == "palm":
+            self.count += events.count("arm")
+        elif kind == "point":
             self.count += events.count("pointer")
-            if self.count >= 20:
-                self._advance(now)
-        elif i == 2 and "click" in events:
+        elif kind == "click":
+            self.count += events.count("click")
+        elif kind == "two":
+            # one WAVE = scroll activity separated by a pause; counting raw
+            # frames let a single long swipe skip the whole lesson
+            if "scroll" in events:
+                if now - self._last_scroll > 0.6:
+                    self.count += 1
+                self._last_scroll = now
+        elif kind == "hold":
+            self.count += events.count("drag_end")   # full press AND release
+        elif kind == "flick":
+            self.count += sum(1 for e in events if e.startswith("swipe"))
+        if self.count >= self.STEPS[self.idx][3]:
             self._advance(now)
-        elif i == 3:
-            self.count += events.count("scroll")
-            if self.count >= 12:
-                self._advance(now)
-        elif i == 4 and any(e.startswith("swipe") for e in events):
-            self._advance(now)      # last lesson: lowering the hand = done
 
     def draw(self, frame, app, now, w, h):
-        cv2.rectangle(frame, (0, h - 130), (w, h), INK, -1)
-        cv2.line(frame, (0, h - 130), (w, h - 130), HAIR, 1, cv2.LINE_AA)
+        SH = 168                       # strip height
+        cv2.rectangle(frame, (0, h - SH), (w, h), INK, -1)
+        cv2.line(frame, (0, h - SH), (w, h - SH), HAIR, 1, cv2.LINE_AA)
         chip_w = track_w("PRACTICE MODE", 0.5, 1) + 28
         rounded_rect(frame, (24, 138), (24 + chip_w, 166), 6, PAPER, -1)
         draw_tracked(frame, "PRACTICE MODE", (38, 157), 0.5, (0, 0, 0), 1)
@@ -2195,24 +2335,47 @@ class Tutorial:
                     (24 + chip_w + 14, 157), FONT, 0.45, SILVER, 1,
                     cv2.LINE_AA)
         if self.done:
-            draw_tracked(frame, "TUTORIAL COMPLETE", (24, h - 70), 0.8,
-                         PAPER, 1, tracking=10, halo=True)
+            draw_serif(frame, "you know all of it.",
+                       (24, h - SH // 2 + 8), 0.9, PAPER, 1, halo=True)
             return
-        title, instr = self.STEPS[self.idx]
-        draw_tracked(frame, f"{self.idx + 1} / {len(self.STEPS)}   {title}",
-                     (24, h - 86), 0.6, PAPER, 1, tracking=8, halo=True)
-        draw_serif(frame, instr, (24, h - 52), 0.62, PAPER, 1, halo=True)
-        if self.idx in (1, 3):
-            target = 20 if self.idx == 1 else 12
-            frac = min(1.0, self.count / target)
-            cv2.line(frame, (24, h - 30), (424, h - 30), HAIR, 2, cv2.LINE_AA)
-            cv2.line(frame, (24, h - 30), (24 + int(400 * frac), h - 30),
-                     PAPER, 2, cv2.LINE_AA)
-        cv2.putText(frame, "n skip   t exit", (w - 200, h - 24), FONT, 0.45,
+
+        kind, title, instr, reps = self.STEPS[self.idx]
+
+        # the animated hand, on its own chip - the lesson itself
+        ax, ay, asz = 24, h - SH + 14, SH - 28
+        rounded_rect(frame, (ax, ay), (ax + asz + 24, ay + asz), 12,
+                     RAISED, -1)
+        rounded_rect(frame, (ax, ay), (ax + asz + 24, ay + asz), 12, HAIR, 1)
+        draw_gesture_anim(frame, ax + 12, ay, asz, kind, now)
+
+        tx = ax + asz + 52
+        draw_tracked(frame, title, (tx, h - SH + 46), 0.7, PAPER, 1,
+                     tracking=10, halo=True)
+        draw_serif(frame, instr, (tx, h - SH + 84), 0.62, PAPER, 1, halo=True)
+
+        # progress: dots for countable reps, a line for the movement step
+        if reps <= 5:
+            for i in range(reps):
+                p = (tx + 8 + i * 30, h - SH + 118)
+                if i < self.count:
+                    cv2.circle(frame, p, 7, PAPER, -1, cv2.LINE_AA)
+                else:
+                    cv2.circle(frame, p, 7, GREY, 1, cv2.LINE_AA)
+        else:
+            frac = min(1.0, self.count / reps)
+            cv2.line(frame, (tx, h - SH + 116), (tx + 320, h - SH + 116),
+                     HAIR, 3, cv2.LINE_AA)
+            cv2.line(frame, (tx, h - SH + 116),
+                     (tx + int(320 * frac), h - SH + 116), PAPER, 3,
+                     cv2.LINE_AA)
+
+        draw_tracked(frame, f"{self.idx + 1} / {len(self.STEPS)}",
+                     (w - 130, h - SH + 46), 0.55, GREY, 1)
+        cv2.putText(frame, "n skip   t exit", (w - 160, h - 20), FONT, 0.45,
                     GREY, 1, cv2.LINE_AA)
         if app.state != Sleyth.ARMED and self.idx > 0:
-            cv2.putText(frame, "summon first: open palm + hold still",
-                        (24, h - 142), FONT, 0.5, SILVER, 1, cv2.LINE_AA)
+            draw_serif(frame, "summon first: open palm, hold still",
+                       (24, h - SH - 16), 0.55, SILVER, 1, halo=True)
         if now < self.flash_until:
             draw_serif(frame, "nice.", (w // 2 - serif_w("nice.", 1.4, 2) // 2,
                                         96), 1.4, PAPER, 2, halo=True)
@@ -2447,12 +2610,25 @@ def main():
     pill = glass.GlassPill(
         GLASS_W, GLASS_H, PILL_GAP_BOTTOM,
         menu=[("Full view / settings", "f"), ("Reset position", "p"),
-              ("Tutorial", "t"), ("Recalibrate", "c"), ("-", ""),
+              ("Tutorial", "t"), ("Recalibrate", "c"),
+              ("Grant Accessibility...", "A"), ("-", ""),
               ("Quit Sleyth", "q")],
         on_menu=lambda k: menu_cmds.append(k),
         on_drop=remember_widget,
         origin=tuple(saved_xy) if isinstance(saved_xy, (list, tuple))
         and len(saved_xy) == 2 else None)
+
+    # An unsigned, quarantined .app gets run from a read-only randomized
+    # mount ("App Translocation") - Accessibility grants then never stick,
+    # because the path macOS granted is gone on the next launch.
+    if "/AppTranslocation/" in sys.executable:
+        subprocess.Popen(["osascript", "-e",
+                          'display dialog "Move Sleyth.app into your '
+                          'Applications folder (or anywhere) with Finder, '
+                          'then open it again.\n\nmacOS is running this copy '
+                          'from a temporary location, so permissions cannot '
+                          'be remembered." with title "Sleyth" buttons '
+                          '{"OK"} default button 1 with icon caution'])
 
     view = "panel"
     tutorial, tut_prev_dry = None, None
@@ -2497,6 +2673,7 @@ def main():
                   "Privacy & Security) and press d.")
 
     last_seq = -1
+    last_trust_check = 0.0
     fps_ema = 30.0
     last_vision_t = time.time()
     while True:
@@ -2557,6 +2734,18 @@ def main():
             tutorial.update(events, now)
             if tutorial.done and now >= tutorial.flash_until:
                 end_tutorial()
+
+        # The user grants Accessibility mid-run; the app must notice by
+        # itself. "Grant, see nothing change, give up" was the #1 way the
+        # packaged app died in someone's hands.
+        if (injector.dry and injector.trusted is False
+                and now - last_trust_check > 2.0):
+            last_trust_check = now
+            if Injector._check_trust(prompt=False):
+                injector.set_dry(False)
+                if not injector.dry:
+                    toast, toast_until = "LIVE", now + 2.5
+                    play("arm")
 
         if now >= toast_until:
             toast = None
@@ -2635,6 +2824,10 @@ def main():
             if injector.dry != was_dry:
                 app.log({"event": "injector_mode",
                          "dry": injector.dry})
+        elif k == ord("A"):           # menu: open the Accessibility pane
+            subprocess.Popen(
+                ["open", "x-apple.systempreferences:com.apple.preference"
+                 ".security?Privacy_Accessibility"])
         elif k == ord("r"):
             for key in app.stats:
                 app.stats[key] = 0

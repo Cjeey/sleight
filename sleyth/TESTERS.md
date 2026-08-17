@@ -10,6 +10,11 @@ time — that is expected, and the steps below get past it.
 
 ## Install (2 minutes, once)
 
+**0. Drag Sleyth.app into your Applications folder first.**
+Do not run it from Downloads or straight out of the zip — macOS runs
+unmoved apps from a temporary location and forgets their permissions
+every time. (Sleyth will warn you if you skip this.)
+
 **1. Open it the first time by RIGHT-CLICKING the app → Open.**
 Then click **Open** in the dialog.
 
@@ -21,9 +26,11 @@ normally.
 
 **3. Allow Accessibility** — this is the one people miss.
 
-- **System Settings → Privacy & Security → Accessibility**
+- Menu bar → **◎ → Grant Accessibility...** takes you straight to the right
+  place (or System Settings → Privacy & Security → Accessibility)
 - Turn **Sleyth** ON (use `+` and pick Sleyth.app if it isn't listed)
-- **Quit Sleyth and reopen it**
+- No restart needed — Sleyth notices within a couple of seconds and says
+  **LIVE**
 
 Without this, everything looks like it is working but the cursor never moves.
 The widget shows a white **DRY** chip when this is the problem.

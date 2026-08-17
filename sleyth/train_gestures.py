@@ -1,7 +1,7 @@
 """
 Teach Sleyth YOUR hand - about 3 minutes, once.
 
-Sleyth's built-in pose rules are geometry I wrote by hand ("a finger counts
+Sleyth's built-in pose rules are geometry written by hand ("a finger counts
 as extended if its tip is farther from the wrist than its middle joint").
 Those rules are generic. Your hand is not.
 
@@ -24,23 +24,44 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import sleyth as sl                                          # noqa: E402
+import sleyth as sl                                           # noqa: E402
 
 SECONDS = 6.0
 TARGET_PER_POSE = 130
 
+#          key      anim     title                     serif hint
 PROMPTS = [
-    ("point", "ONE finger up (the CURSOR pose)",
-     "rotate + tilt your hand, move near and far"),
-    ("two", "TWO fingers up (the SCROLL pose)",
-     "keep both fingers together, vary the angle"),
-    ("palm", "OPEN PALM, all fingers spread (SUMMON / BACK)",
-     "tilt it, turn it slightly, near and far"),
-    ("fist", "CLOSED FIST (does nothing - taught so it never misfires)",
-     "rotate it, thumb in and out"),
-    ("other", "EVERYTHING ELSE - relaxed, half-curled, reaching, waving",
-     "be messy on purpose: this is what teaches it to stay quiet"),
+    ("point", "point", "One finger",
+     "rotate and tilt it, move near and far"),
+    ("two", "two", "Two fingers",
+     "keep them together, vary the angle"),
+    ("palm", "palm", "Open palm",
+     "fingers spread - tilt it, turn it, near and far"),
+    ("fist", "fist", "Closed fist",
+     "it does nothing - taught so it never misfires"),
+    ("other", "free", "Everything else",
+     "be messy on purpose: this teaches it to stay quiet"),
 ]
+
+
+def scrim(frame, y0, y1, strength=0.72):
+    band = frame.copy()
+    cv2.rectangle(band, (0, y0), (frame.shape[1], y1), (0, 0, 0), -1)
+    cv2.addWeighted(band, strength, frame, 1 - strength, 0, frame)
+
+
+def header(frame, idx, title, hint, now):
+    h, w = frame.shape[:2]
+    scrim(frame, 0, 176)
+    sl.draw_tracked(frame, f"TEACH IT YOUR HAND   {idx + 1} / {len(PROMPTS)}",
+                    (40, 52), 0.5, sl.GREY, 1, tracking=10, halo=True)
+    sl.draw_serif(frame, title, (40, 106), 1.1, sl.PAPER, 2, halo=True)
+    sl.draw_serif(frame, hint, (40, 148), 0.6, sl.SILVER, 1, halo=True)
+    # the pose, performed by the schematic hand on its own chip
+    ax = w - 190
+    sl.rounded_rect(frame, (ax, 22), (ax + 150, 172), 12, sl.RAISED, -1)
+    sl.rounded_rect(frame, (ax, 22), (ax + 150, 172), 12, sl.HAIR, 1)
+    return ax
 
 
 def main():
@@ -48,8 +69,6 @@ def main():
     if not cam.isOpened():
         sys.exit("Camera would not open.")
     engine = sl.HandEngine()
-    drawer = mp_draw = __import__("mediapipe").solutions.drawing_utils
-    styles = __import__("mediapipe").solutions.drawing_styles
     aspect = sl.CAM_W / sl.CAM_H
 
     cv2.namedWindow("Sleyth - training", cv2.WINDOW_NORMAL)
@@ -58,7 +77,7 @@ def main():
     X, y = [], []
     print(__doc__)
 
-    for idx, (label, title, hint) in enumerate(PROMPTS):
+    for idx, (label, anim, title, hint) in enumerate(PROMPTS):
         # ---- get ready ----
         ready_until = time.time() + 3.0
         while time.time() < ready_until:
@@ -67,11 +86,14 @@ def main():
                 continue
             frame = cv2.flip(frame, 1)
             h, w = frame.shape[:2]
-            sl.draw_text(frame, f"{idx + 1}/{len(PROMPTS)}  {title}",
-                         (30, 60), 0.85, sl.AMBER, 2)
-            sl.draw_text(frame, hint, (30, 100), 0.6, sl.WHITE, 2)
-            sl.draw_text(frame, f"starting in {ready_until - time.time():.0f}",
-                         (30, h - 40), 1.0, sl.GREEN, 3)
+            now = time.time()
+            ax = header(frame, idx, title, hint, now)
+            sl.draw_gesture_anim(frame, ax + 15, 32, 130, anim, now)
+            left = ready_until - now
+            rr = int(28)
+            cv2.ellipse(frame, (64, h - 64), (rr, rr), -90, 0,
+                        int(360 * (1 - left / 3.0)), sl.PAPER, 3, cv2.LINE_AA)
+            sl.draw_text(frame, f"{left:.0f}", (56, h - 56), 0.7, sl.PAPER, 2)
             cv2.imshow("Sleyth - training", frame)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 cam.release(); cv2.destroyAllWindows(); sys.exit("cancelled")
@@ -87,20 +109,30 @@ def main():
             h, w = frame.shape[:2]
             now = time.time()
             r = engine.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), now)
-            if r is not None:
+            seen = r is not None
+            if seen:
                 lms = r[0]
                 f = sl.pose_features(lms, aspect)
                 if f is not None:
                     X.append(f)
                     y.append(idx)
                     got += 1
-                sl.draw_hand(frame, lms, drawer, styles, w, h)
+                sl.draw_hand(frame, lms, None, None, w, h)
+            ax = header(frame, idx, title, hint, now)
+            sl.draw_gesture_anim(frame, ax + 15, 32, 130, anim, now)
+            scrim(frame, h - 96, h)
             frac = 1.0 - max(0.0, (t_end - now) / SECONDS)
-            cv2.rectangle(frame, (30, h - 60),
-                          (30 + int((w - 60) * frac), h - 34), sl.GREEN, -1)
-            sl.draw_text(frame, f"RECORDING  {title}", (30, 60), 0.8, sl.GREEN, 2)
-            sl.draw_text(frame, hint, (30, 100), 0.6, sl.WHITE, 2)
-            sl.draw_text(frame, f"{got} samples", (30, h - 74), 0.6, sl.WHITE, 2)
+            cv2.line(frame, (40, h - 56), (w - 40, h - 56), sl.HAIR, 3,
+                     cv2.LINE_AA)
+            cv2.line(frame, (40, h - 56),
+                     (40 + int((w - 80) * frac), h - 56), sl.PAPER, 3,
+                     cv2.LINE_AA)
+            cv2.circle(frame, (46, h - 26), 5,
+                       sl.PAPER if seen else sl.HAIR, -1, cv2.LINE_AA)
+            cv2.putText(frame, f"{got} samples" if seen
+                        else "hold your hand up, well lit",
+                        (60, h - 21), sl.FONT, 0.5,
+                        sl.PAPER if seen else sl.SILVER, 1, cv2.LINE_AA)
             cv2.imshow("Sleyth - training", frame)
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 cam.release(); cv2.destroyAllWindows(); sys.exit("cancelled")
