@@ -1,5 +1,5 @@
 """
-Sleyth v8.0 - trackpad in the air.
+Sleyth v8.1 - trackpad in the air.
 
 Gestures (after summoning):
 
@@ -84,7 +84,7 @@ except ImportError:
     kAXTrustedCheckOptionPrompt = None
 
 
-VERSION = "8.0"                # one place; shown on screen and by --check
+VERSION = "8.1"                # one place; shown on screen and by --check
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -255,6 +255,101 @@ def play(kind):
     if path and os.path.exists(path):
         subprocess.Popen(["afplay", path], stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
+
+
+# --------------------------------------------------------------------------- calm audio
+
+def _write_wav(path, samples, rate=22050):
+    import wave
+    data = np.clip(samples, -1.0, 1.0)
+    pcm = (data * 32767).astype("<i2").tobytes()
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+
+
+def ensure_sounds():
+    """Synthesise the onboarding audio once. No asset files to ship, no
+    licences to worry about - just a quiet pad and a soft chime.
+    Returns (pad_path, chime_path) or (None, None) if anything fails."""
+    pad = os.path.join(SUPPORT, "ambient.wav")
+    chime = os.path.join(SUPPORT, "chime.wav")
+    try:
+        rate = 22050
+        if not os.path.exists(pad):
+            dur = 60.0
+            t = np.linspace(0, dur, int(rate * dur), endpoint=False)
+            # a low triad, slightly detuned so it breathes instead of buzzing
+            s = (0.34 * np.sin(2 * np.pi * 110.0 * t)
+                 + 0.26 * np.sin(2 * np.pi * 110.6 * t)
+                 + 0.18 * np.sin(2 * np.pi * 164.8 * t)
+                 + 0.12 * np.sin(2 * np.pi * 220.4 * t))
+            s *= 0.55 + 0.45 * np.sin(2 * np.pi * 0.045 * t)   # slow swell
+            edge = int(rate * 3.0)                             # 3s fades
+            env = np.ones_like(s)
+            env[:edge] = np.linspace(0, 1, edge)
+            env[-edge:] = np.linspace(1, 0, edge)
+            _write_wav(pad, s * env * 0.16, rate)
+        if not os.path.exists(chime):
+            dur = 0.9
+            t = np.linspace(0, dur, int(rate * dur), endpoint=False)
+            s = (np.sin(2 * np.pi * 880.0 * t)
+                 + 0.5 * np.sin(2 * np.pi * 1320.0 * t)
+                 + 0.25 * np.sin(2 * np.pi * 1760.0 * t))
+            _write_wav(chime, s * np.exp(-5.5 * t) * 0.22, rate)
+        return pad, chime
+    except Exception:
+        return None, None
+
+
+class Ambience:
+    """A quiet bed of sound under the intro. afplay cannot loop, so the
+    track is simply restarted when it runs out."""
+
+    def __init__(self):
+        self.pad, self.chime_path = ensure_sounds()
+        self.proc = None
+        self.until = 0.0
+        self.on = False
+
+    def start(self, now):
+        if not self.pad or self.on:
+            return
+        self.on = True
+        self._spawn(now)
+
+    def _spawn(self, now):
+        try:
+            self.proc = subprocess.Popen(
+                ["afplay", "-v", "0.35", self.pad],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.until = now + 58.0
+        except Exception:
+            self.pad = None
+
+    def tick(self, now):
+        if self.on and self.pad and now > self.until:
+            self._spawn(now)
+
+    def chime(self):
+        if self.chime_path:
+            try:
+                subprocess.Popen(["afplay", "-v", "0.5", self.chime_path],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    def stop(self):
+        self.on = False
+        if self.proc is not None:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+            self.proc = None
 
 
 def draw_text(img, text, org, scale=0.6, color=WHITE, thick=2):
@@ -1713,7 +1808,7 @@ class Sleyth:
         s = self.stats
         rate = s["arms_no_action"] / mins * 20 if mins > 0.5 else 0.0
         print("\n" + "=" * 62)
-        print("  SLEYTH v8.0 - SESSION REPORT")
+        print("  SLEYTH v8.1 - SESSION REPORT")
         print("=" * 62)
         print(f"  duration            {mins:.1f} min")
         print(f"  arms                {s['arms']}")
@@ -2019,6 +2114,12 @@ def blit_text(canvas, tb, x, y, alpha=255, tint=PAPER):
     src = tb[sy0:sy0 + h, sx0:sx0 + w]
     dst = canvas[dy0:dy0 + h, dx0:dx0 + w]
     sa = src[:, :, 3].astype(np.float32) * (alpha / 255.0) / 255.0
+    if canvas.shape[2] == 3:            # opaque BGR frame: plain "over"
+        for ch in range(3):
+            dst[:, :, ch] = np.clip(
+                tint[ch] * sa + dst[:, :, ch].astype(np.float32) * (1 - sa),
+                0, 255).astype(np.uint8)
+        return tw
     da = dst[:, :, 3].astype(np.float32) / 255.0
     oa = sa + da * (1.0 - sa)
     safe = np.maximum(oa, 1e-6)
@@ -2317,6 +2418,422 @@ def render_panel(app, obs, active, toast, now, thumb=None, lms=None):
         cv2.circle(c, (_mx(obs["ix"]), _my(obs["iy"])), 3 * S, INK, 1,
                    cv2.LINE_AA)
     return c
+
+
+# --------------------------------------------------------------------------- onboarding
+
+# Apple's own scale, adapted: real SF Pro, an 8pt grid, generous air, and
+# motion in the 300-500ms band with an ease-out curve.
+GRID = 8
+DUR_BASE, DUR_SLOW = 0.30, 0.50
+
+
+def sf(img, text, xy, size, weight=0.0, color=PAPER, alpha=255,
+       align="left", tracking=0.0):
+    """Draw real system text. Returns the width drawn, in pixels."""
+    tb = glass.text_bitmap(text, size, weight=weight, tracking=tracking)
+    if tb is None:
+        draw_tracked(img, text, xy, size / 26.0, _rgba(color, alpha), 1)
+        return track_w(text, size / 26.0, 1, 7)
+    x, y = xy
+    if align == "center":
+        x -= tb.shape[1] / 2
+    elif align == "right":
+        x -= tb.shape[1]
+    blit_text(img, tb, int(x), int(y - tb.shape[0] / 2), alpha, color)
+    return tb.shape[1]
+
+
+def sf_w(text, size, weight=0.0, tracking=0.0):
+    tb = glass.text_bitmap(text, size, weight=weight, tracking=tracking)
+    return tb.shape[1] if tb is not None else track_w(text, size / 26.0, 1, 7)
+
+
+def wrap_lines(text, size, weight, max_w):
+    """Greedy wrap against the real rendered width - Apple body copy lives
+    around 60 characters, but the pixel measure is what actually matters."""
+    words, lines, cur = text.split(), [], ""
+    for wd in words:
+        trial = (cur + " " + wd).strip()
+        if sf_w(trial, size, weight) > max_w and cur:
+            lines.append(cur)
+            cur = wd
+        else:
+            cur = trial
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+class Button:
+    """A pill button, Apple-shaped: 980px radius, >=44pt tall, filled for
+    the primary action and outlined for the secondary."""
+
+    def __init__(self, label, key, primary=False, enabled=True):
+        self.label = label
+        self.key = key
+        self.primary = primary
+        self.enabled = enabled
+        self.rect = (0, 0, 0, 0)
+        self.hover = False
+
+    def layout(self, x, y, h=48):
+        w = int(sf_w(self.label, 17.0, 0.3) + 56)
+        self.rect = (int(x), int(y - h / 2), w, h)
+        return w
+
+    def hit(self, mx, my):
+        x, y, w, h = self.rect
+        return self.enabled and x <= mx <= x + w and y <= my <= y + h
+
+    def draw(self, img, alpha=255):
+        x, y, w, h = self.rect
+        a = alpha if self.enabled else int(alpha * 0.38)
+        if self.primary:
+            fill = PAPER if not self.hover else (255, 255, 255)
+            rounded_rect(img, (x, y), (x + w, y + h), h // 2,
+                         _rgba(fill, a), -1)
+            sf(img, self.label, (x + w / 2, y + h / 2), 17.0, 0.3,
+               (10, 10, 10), a, align="center")
+        else:
+            rounded_rect(img, (x, y), (x + w, y + h), h // 2,
+                         _rgba(PAPER, int(a * (0.55 if self.hover else 0.32))),
+                         2)
+            sf(img, self.label, (x + w / 2, y + h / 2), 17.0, 0.3,
+               PAPER, a, align="center")
+
+
+class Onboarding:
+    """The first two minutes.
+
+    The old tutorial rushed: it auto-advanced the moment a gesture landed,
+    so nothing was retained. This one is paced BY THE USER - every step
+    waits for Next, offers Show again, and tells you plainly whether it can
+    see what you are doing. Nothing here can touch the real system."""
+
+    WELCOME, PURPOSE, PRIVACY, ASK, LESSON, DONE, FINISHED = range(7)
+
+    LESSONS = [
+        ("palm", "Wake it up", "Hold an open palm toward the camera and keep "
+         "it still for about a second.",
+         "That is how Sleyth knows you mean it. Nothing responds until you "
+         "do this.", 1),
+        ("point", "Move the cursor", "Point with one finger and move your "
+         "hand slowly.",
+         "The cursor follows your fingertip. Move slowly for fine control, "
+         "quickly to cross the screen.", 25),
+        ("click", "Click", "Touch your thumb and index finger together.",
+         "It clicks the moment they meet - there is no need to hold or "
+         "release.", 3),
+        ("two", "Scroll", "Hold two fingers up and move your hand up and "
+         "down.",
+         "The page follows your hand. Curl your fingers to pause.", 3),
+        ("hold", "Drag", "Touch your thumb to your little finger, move, then "
+         "let go.",
+         "That is click-and-hold: for dragging files, sliders and windows.",
+         1),
+        ("flick", "Go back", "Open your whole palm and flick it sideways.",
+         "Right goes back, left goes forward - the same way as a trackpad "
+         "swipe.", 1),
+    ]
+
+    def __init__(self, ambience=None):
+        self.stage = self.WELCOME
+        self.idx = 0
+        self.count = 0
+        self.t0 = time.time()
+        self.reps_done_at = 0.0
+        self.buttons = []
+        self.amb = ambience
+        self.mouse = (0, 0)
+        self.want_tutorial = True
+        self._last_scroll = -1e9
+        self._replay_from = 0.0
+
+    # ---------------------------------------------------------------- state
+    @property
+    def finished(self):
+        return self.stage == self.FINISHED
+
+    def _go(self, stage, now):
+        self.stage = stage
+        self.t0 = now
+        self.count = 0
+        self.reps_done_at = 0.0
+
+    def lesson(self):
+        return self.LESSONS[min(self.idx, len(self.LESSONS) - 1)]
+
+    def done_here(self):
+        return self.count >= self.lesson()[4]
+
+    def update(self, events, now):
+        """Count real gestures, but never advance on its own."""
+        if self.stage != self.LESSON:
+            return
+        kind = self.lesson()[0]
+        before = self.count
+        if kind == "palm":
+            self.count += events.count("arm")
+        elif kind == "point":
+            self.count += events.count("pointer")
+        elif kind == "click":
+            self.count += events.count("click")
+        elif kind == "two":
+            if "scroll" in events:
+                if now - self._last_scroll > 0.6:
+                    self.count += 1
+                self._last_scroll = now
+        elif kind == "hold":
+            self.count += events.count("drag_end")
+        elif kind == "flick":
+            self.count += sum(1 for e in events if e.startswith("swipe"))
+        if before < self.lesson()[4] <= self.count:
+            self.reps_done_at = now
+            if self.amb:
+                self.amb.chime()
+
+    # ---------------------------------------------------------------- input
+    def on_mouse(self, event, x, y, flags, param):
+        self.mouse = (x, y)
+        for b in self.buttons:
+            b.hover = b.hit(x, y)
+        if event == cv2.EVENT_LBUTTONDOWN:
+            for b in self.buttons:
+                if b.hit(x, y):
+                    self.act(b.key, time.time())
+                    return
+
+    def key(self, k, now):
+        if k in (13, 32):                       # return / space = primary
+            for b in self.buttons:
+                if b.primary and b.enabled:
+                    return self.act(b.key, now)
+        elif k == 27:                           # esc = skip out
+            return self.act("skip", now)
+        elif k == ord("r"):
+            return self.act("again", now)
+
+    def act(self, key, now):
+        if key == "skip":
+            self._go(self.FINISHED, now)
+        elif key == "next":
+            if self.stage == self.WELCOME:
+                self._go(self.PURPOSE, now)
+            elif self.stage == self.PURPOSE:
+                self._go(self.PRIVACY, now)
+            elif self.stage == self.PRIVACY:
+                self._go(self.ASK, now)
+            elif self.stage == self.LESSON:
+                if self.idx + 1 < len(self.LESSONS):
+                    self.idx += 1
+                    self._go(self.LESSON, now)
+                else:
+                    self._go(self.DONE, now)
+            elif self.stage == self.DONE:
+                self._go(self.FINISHED, now)
+        elif key == "tutorial":
+            self.idx = 0
+            self._go(self.LESSON, now)
+        elif key == "notutorial":
+            self.want_tutorial = False
+            self._go(self.DONE, now)
+        elif key == "again":
+            self.count = 0
+            self.reps_done_at = 0.0
+            self._replay_from = now
+        elif key == "back":
+            if self.stage == self.LESSON and self.idx > 0:
+                self.idx -= 1
+                self._go(self.LESSON, now)
+
+    # ----------------------------------------------------------------- draw
+    def draw(self, frame, app, now, w, h, obs):
+        frame[:] = INK                       # a calm, full-bleed ground
+        t = now - self.t0
+        fade = ease_out(min(1.0, t / DUR_SLOW))
+        self.buttons = []
+        cx = w // 2
+
+        if self.stage == self.WELCOME:
+            self._welcome(frame, now, t, w, h, cx)
+        elif self.stage in (self.PURPOSE, self.PRIVACY):
+            self._message(frame, now, fade, w, h, cx)
+        elif self.stage == self.ASK:
+            self._ask(frame, fade, w, h, cx)
+        elif self.stage == self.LESSON:
+            self._lesson(frame, app, now, fade, w, h, obs)
+        elif self.stage == self.DONE:
+            self._done(frame, fade, w, h, cx)
+
+        # a quiet way out, always available
+        if self.stage != self.WELCOME:
+            sf(frame, "esc to skip", (w - 5 * GRID, h - 4 * GRID), 12.0, 0.0,
+               GREY, int(150 * fade), align="right")
+
+    def _welcome(self, frame, now, t, w, h, cx):
+        a = int(255 * ease_out(min(1.0, t / 1.2)))
+        draw_serif(frame, "Sleyth",
+                   (cx - serif_w("Sleyth", 2.6, 3) // 2, h // 2 - 10),
+                   2.6, PAPER, 3)
+        if t > 0.9:
+            a2 = int(210 * ease_out(min(1.0, (t - 0.9) / DUR_SLOW)))
+            # let the type engine do the letter-spacing; literal spaces get
+            # collapsed and the word runs together
+            sf(frame, "A TRACKPAD IN THE AIR", (cx, h // 2 + 6 * GRID), 13.0,
+               0.2, SILVER, a2, align="center", tracking=4.0)
+        if t > 2.2:
+            a3 = int(255 * ease_out(min(1.0, (t - 2.2) / DUR_SLOW)))
+            b = Button("Begin", "next", primary=True)
+            b.layout(cx - b.layout(0, 0) // 2, h // 2 + 16 * GRID)
+            b.hover = b.hit(*self.mouse)
+            b.draw(frame, a3)
+            self.buttons = [b]
+
+    def _message(self, frame, now, fade, w, h, cx):
+        if self.stage == self.PURPOSE:
+            title = "Your hand is the trackpad."
+            body = ("Sleyth watches your hand through the camera and moves "
+                    "the cursor with it. No mouse, no hardware - useful "
+                    "exactly when your hands are busy or nowhere near the "
+                    "keyboard.")
+        else:
+            title = "It never leaves your Mac."
+            body = ("The camera is used only to find your hand. Nothing is "
+                    "recorded, nothing is uploaded, and no video is ever "
+                    "written to disk. Close the app and it stops looking.")
+        a = int(255 * fade)
+        y = h // 2 - 9 * GRID
+        sf(frame, title, (cx, y), 40.0, 0.62, PAPER, a, align="center")
+        maxw = min(int(w * 0.62), 720)
+        for i, line in enumerate(wrap_lines(body, 17.0, 0.0, maxw)):
+            sf(frame, line, (cx, y + 7 * GRID + i * 4 * GRID), 17.0, 0.0,
+               SILVER, int(a * 0.92), align="center")
+        b = Button("Continue", "next", primary=True)
+        bw = b.layout(0, 0)
+        b.layout(cx - bw // 2, h // 2 + 16 * GRID)
+        b.hover = b.hit(*self.mouse)
+        b.draw(frame, a)
+        self.buttons = [b]
+
+    def _ask(self, frame, fade, w, h, cx):
+        a = int(255 * fade)
+        y = h // 2 - 8 * GRID
+        sf(frame, "Would you like a guided tour?", (cx, y), 40.0, 0.62,
+           PAPER, a, align="center")
+        sf(frame, "Six gestures, at your own pace. You press Next - nothing "
+           "moves on without you.", (cx, y + 7 * GRID), 17.0, 0.0, SILVER,
+           int(a * 0.92), align="center")
+        yes = Button("Show me how", "tutorial", primary=True)
+        no = Button("I'll explore myself", "notutorial")
+        wy, wn = yes.layout(0, 0), no.layout(0, 0)
+        total = wy + 2 * GRID + wn
+        yes.layout(cx - total // 2, h // 2 + 14 * GRID)
+        no.layout(cx - total // 2 + wy + 2 * GRID, h // 2 + 14 * GRID)
+        for b in (yes, no):
+            b.hover = b.hit(*self.mouse)
+            b.draw(frame, a)
+        self.buttons = [yes, no]
+
+    def _lesson(self, frame, app, now, fade, w, h, obs):
+        kind, title, how, why, reps = self.lesson()
+        a = int(255 * fade)
+        pad = 7 * GRID
+
+        # --- the gesture, playing on loop, on its own card
+        card = min(int(h * 0.62), 380)
+        cy = h // 2
+        rounded_rect(frame, (pad, cy - card // 2), (pad + card, cy + card // 2),
+                     3 * GRID, RAISED, -1)
+        rounded_rect(frame, (pad, cy - card // 2), (pad + card, cy + card // 2),
+                     3 * GRID, HAIR, 1)
+        draw_gesture_anim(frame, pad + card // 8, cy - card // 2 + card // 8,
+                          int(card * 0.75), kind,
+                          now - self._replay_from)
+
+        # --- the words, as one optically centred block against the card
+        tx = pad + card + 6 * GRID
+        maxw = w - tx - pad
+        how_lines = wrap_lines(how, 18.0, 0.1, maxw)
+        why_lines = wrap_lines(why, 15.0, 0.0, maxw)
+        block = (5 * GRID + 6 * GRID + len(how_lines) * 4 * GRID
+                 + GRID + len(why_lines) * 3 * GRID)
+        yy = cy - card // 2 + max(2 * GRID,
+                                  (card - 16 * GRID - block) // 2)
+
+        # step dots read faster than "3 of 6", and only one of them is needed
+        for i in range(len(self.LESSONS)):
+            filled = i < self.idx or (i == self.idx and self.done_here())
+            cur = i == self.idx
+            cv2.circle(frame, (tx + 4 + i * 18, yy), 4 if not cur else 5,
+                       PAPER if filled or cur else HAIR,
+                       -1 if filled else 1, cv2.LINE_AA)
+        yy += 5 * GRID
+
+        sf(frame, title, (tx, yy), 34.0, 0.62, PAPER, a)
+        yy += 6 * GRID
+        for line in how_lines:
+            sf(frame, line, (tx, yy), 18.0, 0.1, PAPER, a)
+            yy += 4 * GRID
+        yy += GRID
+        for line in why_lines:
+            sf(frame, line, (tx, yy), 15.0, 0.0, GREY, a)
+            yy += 3 * GRID
+
+        # --- live feedback: is it actually seeing you?
+        fy = cy + card // 2 - 9 * GRID
+        seen = obs is not None
+        done = self.done_here()
+        if done:
+            cv2.circle(frame, (tx + 7, fy - 5), 7, PAPER, -1, cv2.LINE_AA)
+            sf(frame, "Got it - you can move on.", (tx + 3 * GRID, fy), 15.0,
+               0.3, PAPER, a)
+        elif reps > 1:
+            sf(frame, f"{min(self.count, reps)} of {reps}",
+               (tx, fy), 15.0, 0.3, SILVER, a)
+            bw = 200
+            bx = tx + 9 * GRID
+            cv2.line(frame, (bx, fy - 4), (bx + bw, fy - 4), HAIR, 3,
+                     cv2.LINE_AA)
+            if self.count:
+                cv2.line(frame, (bx, fy - 4),
+                         (bx + int(bw * min(1.0, self.count / reps)), fy - 4),
+                         PAPER, 3, cv2.LINE_AA)
+        else:
+            sf(frame, "hand visible" if seen else "hold your hand up, well lit",
+               (tx, fy), 15.0, 0.0, SILVER if seen else GREY, a)
+
+        # --- controls: the user decides when to move on
+        by = cy + card // 2 - 2 * GRID
+        again = Button("Show again", "again")
+        nxt = Button("Next" if self.idx + 1 < len(self.LESSONS) else "Finish",
+                     "next", primary=True)
+        wa = again.layout(0, 0)
+        again.layout(tx, by)
+        nxt.layout(tx + wa + 2 * GRID, by)
+        for b in (again, nxt):
+            b.hover = b.hit(*self.mouse)
+            b.draw(frame, a)
+        self.buttons = [again, nxt]
+
+    def _done(self, frame, fade, w, h, cx):
+        a = int(255 * fade)
+        y = h // 2 - 8 * GRID
+        sf(frame, "You're ready.", (cx, y), 44.0, 0.62, PAPER, a,
+           align="center")
+        body = ("Raise an open palm to begin, any time. Sleyth waits as a "
+                "small circle at the bottom of your screen and opens when "
+                "it sees your hand.")
+        for i, line in enumerate(wrap_lines(body, 17.0, 0.0,
+                                           min(int(w * 0.6), 700))):
+            sf(frame, line, (cx, y + 7 * GRID + i * 4 * GRID), 17.0, 0.0,
+               SILVER, int(a * 0.92), align="center")
+        b = Button("Start using Sleyth", "next", primary=True)
+        bw = b.layout(0, 0)
+        b.layout(cx - bw // 2, h // 2 + 14 * GRID)
+        b.hover = b.hit(*self.mouse)
+        b.draw(frame, a)
+        self.buttons = [b]
 
 
 # --------------------------------------------------------------------------- tutorial
@@ -2943,14 +3460,23 @@ def main():
     # sees. The glass widget is the whole UI now.
     cv_ready = [False]
 
+    def _on_mouse(event, x, y, flags, param):
+        if tutorial is not None:
+            tutorial.on_mouse(event, x, y, flags, param)
+
     def ensure_cv_window():
         if cv_ready[0]:
             return
         cv_ready[0] = True
         cv2.namedWindow("Sleyth", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Sleyth", 960, 540)
+        cv2.resizeWindow("Sleyth", 1100, 700)
         try:
             cv2.setWindowProperty("Sleyth", cv2.WND_PROP_TOPMOST, 1)
+        except cv2.error:
+            pass
+        # real buttons need a real pointer
+        try:
+            cv2.setMouseCallback("Sleyth", _on_mouse)
         except cv2.error:
             pass
 
@@ -2995,12 +3521,14 @@ def main():
                           '{"OK"} default button 1 with icon caution'])
 
     view = "panel"
+    ambience = Ambience()
     tutorial, tut_prev_dry = None, None
     if not cfg.get("tutorial_done"):
-        tutorial = Tutorial()
+        tutorial = Onboarding(ambience)
         tut_prev_dry = injector.dry
         injector.dry = True            # learning can't touch the real system
         view = "full"
+        ambience.start(time.time())
         cfg["tutorial_done"] = True    # auto-start ONCE, ever - an unfinished
         save_config(cfg)               # tutorial must never hijack next launch
 
@@ -3029,6 +3557,7 @@ def main():
     def end_tutorial():
         nonlocal tutorial, view, toast, toast_until
         injector.set_dry(bool(tut_prev_dry))
+        ambience.stop()
         tutorial = None
         view = "panel"
         show_view()
@@ -3137,8 +3666,9 @@ def main():
                 last_tick = now
 
         if tutorial is not None:
+            ambience.tick(now)
             tutorial.update(events, now)
-            if tutorial.done and now >= tutorial.flash_until:
+            if tutorial.finished:          # it ends when the USER ends it
                 end_tutorial()
 
         # The user grants Accessibility mid-run; the app must notice by
@@ -3168,14 +3698,17 @@ def main():
                 cx_, cy_ = int(obs["ix"] * w), int(obs["iy"] * h)
                 cv2.circle(frame, (cx_, cy_), 8, PAPER, -1, cv2.LINE_AA)
                 cv2.circle(frame, (cx_, cy_), 9, (0, 0, 0), 1, cv2.LINE_AA)
-            draw_guide(frame, active, now, w, h)
-            draw_hud(frame, app, toast, now, w, h)
-            cv2.putText(frame, f"v{VERSION}   {engine.kind}   "
-                               f"cam {cam.cap_fps:.0f}   track {fps_ema:.0f}"
-                               f"   {(active or '-')}",
-                        (w - 630, 36), FONT, 0.45, GREY, 1, cv2.LINE_AA)
             if tutorial is not None:
-                tutorial.draw(frame, app, now, w, h)
+                # onboarding owns the whole screen: a diagnostic HUD behind
+                # a welcome screen is not a first impression
+                tutorial.draw(frame, app, now, w, h, obs)
+            else:
+                draw_guide(frame, active, now, w, h)
+                draw_hud(frame, app, toast, now, w, h)
+                cv2.putText(frame, f"v{VERSION}   {engine.kind}   "
+                                   f"cam {cam.cap_fps:.0f}   "
+                                   f"track {fps_ema:.0f}   {(active or '-')}",
+                            (w - 630, 36), FONT, 0.45, GREY, 1, cv2.LINE_AA)
             cv2.imshow("Sleyth", frame)
         elif pill.ok:
             rgba, rect, chip = render_pill_rgba(app, obs, active, toast, now,
@@ -3196,6 +3729,11 @@ def main():
         if pending_key[0]:                 # menu item picked up above
             k = ord(pending_key[0])
             pending_key[0] = None
+        # onboarding takes the keyboard first: Return/Space advance, R
+        # replays, Esc leaves. Only q still quits outright.
+        if tutorial is not None and k != 255 and k != ord("q"):
+            tutorial.key(k, now)
+            continue
         if k == ord("q"):
             runlog("quit: requested")
             break
@@ -3212,15 +3750,15 @@ def main():
                 show_view()
         elif k == ord("t"):
             if tutorial is None:
-                tutorial = Tutorial()
+                tutorial = Onboarding(ambience)
+                tutorial.stage = Onboarding.LESSON   # replay: straight to it
                 tut_prev_dry = injector.dry
                 injector.dry = True
                 view = "full"
+                ambience.start(now)
                 show_view()
             else:
                 end_tutorial()
-        elif k == ord("n") and tutorial is not None:
-            tutorial.skip_step(now)
         elif k == ord("x"):
             app.mark_false()
         elif k == ord("v"):

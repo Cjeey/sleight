@@ -1353,5 +1353,69 @@ assert (_img3 > 0).sum() > 200, "fallback glyph vanished"
 del m._CLIPS["click"]
 print("30. gesture clips: normalized, resampled, replayed, safe fallback OK")
 
+# ---- 31. onboarding: the USER sets the pace, always
+ob = m.Onboarding()
+t = BASE
+assert ob.stage == m.Onboarding.WELCOME
+# no amount of time or gesturing advances a screen by itself
+for _ in range(200):
+    ob.update(["arm", "click", "pointer"], t)
+    t += DT
+assert ob.stage == m.Onboarding.WELCOME, "onboarding advanced on its own"
+
+ob.act("next", t)
+assert ob.stage == m.Onboarding.PURPOSE
+ob.act("next", t)
+assert ob.stage == m.Onboarding.PRIVACY
+ob.act("next", t)
+assert ob.stage == m.Onboarding.ASK
+ob.act("tutorial", t)
+assert ob.stage == m.Onboarding.LESSON and ob.idx == 0
+
+# completing the reps does NOT move on - it only marks the step done
+target = ob.LESSONS[0][4]
+for _ in range(target + 5):
+    ob.update(["arm"], t)
+    t += DT
+assert ob.done_here(), "reps were not counted"
+assert ob.stage == m.Onboarding.LESSON and ob.idx == 0, \
+    "finishing the reps must not skip ahead - the user presses Next"
+ob.act("next", t)
+assert ob.idx == 1, "Next did not advance"
+
+# Show again resets the practice count for that step
+ob.count = 99
+ob.act("again", t)
+assert ob.count == 0, "Show again should let you practise from scratch"
+
+# you can go back
+ob.act("back", t)
+assert ob.idx == 0
+
+# skipping the tour still lands on the closing screen, not nowhere
+ob2 = m.Onboarding()
+ob2.act("next", t); ob2.act("next", t); ob2.act("next", t)
+ob2.act("notutorial", t)
+assert ob2.stage == m.Onboarding.DONE and ob2.want_tutorial is False
+ob2.act("next", t)
+assert ob2.finished, "the closing screen must be dismissable"
+
+# esc leaves from anywhere, and the last screen does not hang forever
+ob3 = m.Onboarding()
+ob3.key(27, t)
+assert ob3.finished, "esc must always be a way out"
+
+# the scroll lesson counts WAVES, not frames
+ob4 = m.Onboarding()
+ob4.stage = m.Onboarding.LESSON
+ob4.idx = 3                                   # the two-finger scroll lesson
+assert ob4.lesson()[0] == "two", ob4.lesson()[0]
+tt = BASE
+for _ in range(40):
+    ob4.update(["scroll"], tt)
+    tt += DT / 4
+assert ob4.count == 1, f"one continuous swipe must be one wave: {ob4.count}"
+print("31. onboarding: user-paced, reps counted, never self-advances OK")
+
 print()
-print("ALL SLEYTH v8.0 TESTS PASSED")
+print("ALL SLEYTH v8.1 TESTS PASSED")
