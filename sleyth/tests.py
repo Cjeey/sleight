@@ -1467,5 +1467,80 @@ for _ in range(6):
 assert not evs4, f"a fist must stay inert, got {evs4}"
 print("32. hold wins when the pinky is the target, click still wins ties OK")
 
+# ---- 33. onboarding clicks land: OpenCV gives IMAGE coordinates
+# The mac backend scales window clicks to the canvas by itself. 8.2 scaled
+# them AGAIN, so every click flew past every button and Begin looked dead.
+# A click at a button's own laid-out centre must fire it - no translation.
+class _FakeGate:
+    hold_progress = 0.0
+
+
+class _FakeApp:
+    state = object()          # never ARMED
+    gate = _FakeGate()
+
+
+_fa = _FakeApp()
+ob5 = m.Onboarding()
+ob5.t0 = BASE - 10.0                        # far past every fade-in
+_fr = ob5.render(_fa, BASE, 1100, 700, None)
+assert _fr.shape == (700 * m.Onboarding.SS, 1100 * m.Onboarding.SS, 3), _fr.shape
+assert ob5.buttons, "welcome screen laid out no Begin button"
+_bx, _by, _bw, _bh = ob5.buttons[0].rect
+import cv2 as _cv2
+ob5.on_mouse(_cv2.EVENT_LBUTTONDOWN, _bx + _bw // 2, _by + _bh // 2, 0, None)
+assert ob5.stage == m.Onboarding.PURPOSE, \
+    "a click at the button's own centre did not press it"
+
+# hover at the same point must light the button up (dead hover = 'frozen')
+ob5b = m.Onboarding()
+ob5b.t0 = BASE - 10.0
+ob5b.render(_fa, BASE, 1100, 700, None)
+_bx, _by, _bw, _bh = ob5b.buttons[0].rect
+ob5b.on_mouse(_cv2.EVENT_MOUSEMOVE, _bx + _bw // 2, _by + _bh // 2, 0, None)
+assert ob5b.buttons[0].hit(*ob5b.mouse), "hover misses the button it is on"
+
+# the canvas is REUSED across frames - reallocating 9MB per frame was most
+# of the freeze - and a second render must not corrupt the layout
+_fr2 = ob5b.render(_fa, BASE + 0.1, 1100, 700, None)
+assert _fr2 is ob5b._canvas and _fr is not _fr2
+print("33. onboarding clicks, hover and canvas reuse OK")
+
+# ---- 34. 'turn' shows the palm REVERSED, not a rotating sliver
+# The user's words: "just reverse the hand of the palm". Fingers are
+# symmetric, so the thumb side is the whole signal: left of centre while
+# the palm is held, right of centre once it has turned over. And the hand
+# must be FULL WIDTH in both held phases - 8.2 spent most of the loop
+# squashed edge-on, which read as a stick.
+def _thumb_side(u):
+    img = _np.zeros((300, 300, 3), dtype=_np.uint8)
+    m.draw_gesture_anim(img, 20, 20, 260, "turn", u * 4.0)   # T = 4.0
+    img[210:, :] = 0                        # crop off the rotation arc
+    ys, xs = _np.where(img[..., 0] > 100)
+    cx = 20 + 260 // 2
+    # beyond +-0.40*s only the THUMB reaches - the palm ellipse stops at
+    # 0.30*s and the widest finger at 0.20*s
+    band = int(0.40 * 260 * 0.62)
+    return (xs < cx - band).sum(), (xs > cx + band).sum(), xs
+
+_l, _r, _xs = _thumb_side(0.20)             # mid palm-hold
+assert _l > _r * 3, f"palm phase: thumb should sit LEFT ({_l} vs {_r})"
+assert _xs.max() - _xs.min() > 0.5 * 260, "palm phase hand is squashed"
+_l2, _r2, _xs2 = _thumb_side(0.70)          # mid back-hold
+assert _r2 > _l2 * 3, f"back phase: thumb should sit RIGHT ({_l2} vs {_r2})"
+assert _xs2.max() - _xs2.min() > 0.5 * 260, "back phase hand is squashed"
+
+# the flip is quick: at most ~1/5 of the loop may be narrower than half
+_narrow = 0
+for _k in range(40):
+    img = _np.zeros((300, 300, 3), dtype=_np.uint8)
+    m.draw_gesture_anim(img, 20, 20, 260, "turn", _k / 40 * 4.0)
+    img[210:, :] = 0
+    ys, xs = _np.where(img[..., 0] > 100)
+    if len(xs) == 0 or xs.max() - xs.min() < 0.5 * 260:
+        _narrow += 1
+assert _narrow <= 8, f"turn spends too long edge-on: {_narrow}/40 frames"
+print("34. turn = the palm reversed; full-width hand, quick flip OK")
+
 print()
-print("ALL SLEYTH v8.2 TESTS PASSED")
+print("ALL SLEYTH v8.3 TESTS PASSED")

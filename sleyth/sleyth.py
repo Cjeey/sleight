@@ -84,7 +84,7 @@ except ImportError:
     kAXTrustedCheckOptionPrompt = None
 
 
-VERSION = "8.2"                # one place; shown on screen and by --check
+VERSION = "8.3"                # one place; shown on screen and by --check
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -2036,8 +2036,12 @@ def place_window(view, pos="center"):
         else:                                        # bottom-center (default)
             cv2.moveWindow("Sleyth", max(0, (sw - PANEL_W) // 2), y)
     else:
-        cv2.resizeWindow("Sleyth", 960, 540)
-        cv2.moveWindow("Sleyth", max(0, (sw - 960) // 2), 60)
+        # exactly HALF the 2x canvas: on Retina that is one canvas pixel per
+        # device pixel. 960x540 forced a 2.29x downscale that blurred the
+        # crispness the supersampling had just paid for.
+        cv2.resizeWindow("Sleyth", 1100, 700)
+        cv2.moveWindow("Sleyth", max(0, (sw - 1100) // 2),
+                       max(24, (sh - 700) // 2 - 20))
 
 
 _PILL = {"xy": None, "t": 0.0, "energy": 0.0}
@@ -2620,6 +2624,7 @@ class Onboarding:
         self.want_tutorial = True
         self._last_scroll = -1e9
         self._replay_from = 0.0
+        self._canvas = None                 # reused 2x frame, see render()
 
     # ---------------------------------------------------------------- state
     @property
@@ -2666,8 +2671,9 @@ class Onboarding:
 
     # ---------------------------------------------------------------- input
     def on_mouse(self, event, x, y, flags, param):
-        # the window is 1x, the canvas is 2x: clicks must be scaled up
-        x, y = x * self.SS, y * self.SS
+        # OpenCV's mac backend reports the mouse in IMAGE coordinates - it
+        # scales window clicks to the canvas by itself. Scaling again here
+        # (as 8.2 did) put every click past every button: Begin looked dead.
         self.mouse = (x, y)
         for b in self.buttons:
             b.hover = b.hit(x, y)
@@ -2722,16 +2728,22 @@ class Onboarding:
 
     # ----------------------------------------------------------------- draw
     def render(self, app, now, win_w, win_h, obs):
-        """Returns a 2x canvas for a win_w x win_h window."""
+        """Returns a 2x canvas for a win_w x win_h window. The canvas is
+        REUSED across frames: allocating and tuple-filling 9MB per frame
+        cost 14ms - most of the freeze the 2x pass introduced."""
         S = self.SS
-        frame = np.zeros((win_h * S, win_w * S, 3), np.uint8)
-        self.draw(frame, app, now, win_w * S, win_h * S, obs)
-        return frame
+        shape = (win_h * S, win_w * S, 3)
+        if self._canvas is None or self._canvas.shape != shape:
+            self._canvas = np.zeros(shape, np.uint8)
+        self.draw(self._canvas, app, now, win_w * S, win_h * S, obs)
+        return self._canvas
 
     def draw(self, frame, app, now, w, h, obs):
         S = self.SS
         G = GRID * S
-        frame[:] = INK                       # a calm, full-bleed ground
+        frame.fill(INK[0])                   # INK is pure grey: scalar fill
+                                             # is a memset, 74x faster than
+                                             # broadcasting the tuple
         t = now - self.t0
         fade = ease_out(min(1.0, t / DUR_SLOW))
         self.buttons = []
@@ -2764,8 +2776,8 @@ class Onboarding:
             a2 = int(210 * ease_out(min(1.0, (t - 0.9) / DUR_SLOW)))
             # let the type engine do the letter-spacing; literal spaces get
             # collapsed and the word runs together
-            sf(frame, "A TRACKPAD IN THE AIR", (cx, h // 2 + 6 * G), 13.0,
-               0.2, SILVER, a2, align="center", tracking=4.0)
+            sf(frame, "A TRACKPAD IN THE AIR", (cx, h // 2 + 6 * G), 13.0 * S,
+               0.2, SILVER, a2, align="center", tracking=4.0 * S)
         if t > 2.2:
             a3 = int(255 * ease_out(min(1.0, (t - 2.2) / DUR_SLOW)))
             b = Button("Begin", "next", primary=True)
@@ -2807,7 +2819,7 @@ class Onboarding:
         G = GRID * S
         a = int(255 * fade)
         y = h // 2 - 8 * G
-        sf(frame, "Would you like a guided tour?", (cx, y), 40.0, 0.62,
+        sf(frame, "Would you like a guided tour?", (cx, y), 40.0 * S, 0.62,
            PAPER, a, align="center")
         sf(frame, "Six gestures, at your own pace. You press Next - nothing "
            "moves on without you.", (cx, y + 7 * G), 17.0 * S, 0.0, SILVER,
@@ -3091,10 +3103,11 @@ def draw_clip(img, x, y, size, clip, now, color=PAPER):
 
 
 def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2,
-                squash=1.0):
+                squash=1.0, mirror=False):
     """A schematic hand: palm + finger capsules. `fingers` is 4 tuples of
     (extension 0..1, x-spread), thumb an (angle_deg, extension) or None.
-    `squash` narrows the palm so the hand can appear to rotate edge-on.
+    `squash` narrows the palm so the hand can appear to rotate edge-on;
+    `mirror` puts the thumb on the other side - the palm seen from behind.
     Iconic on purpose - it must read as A HAND at a glance, in any language."""
     palm_cy = int(cy + 0.22 * s)
     cv2.ellipse(img, (int(cx), palm_cy),
@@ -3110,9 +3123,10 @@ def _hand_glyph(img, cx, cy, s, fingers, thumb=None, color=PAPER, thick=2,
     if thumb is not None:
         ang, ext = thumb
         a = math.radians(ang)
-        x0 = int(cx - 0.28 * s)
+        sgn = -1.0 if mirror else 1.0
+        x0 = int(cx - sgn * 0.28 * s)
         y0 = palm_cy - int(0.05 * s)
-        x1 = int(x0 - math.cos(a) * (0.18 + 0.30 * ext) * s)
+        x1 = int(x0 - sgn * math.cos(a) * (0.18 + 0.30 * ext) * s)
         y1 = int(y0 - math.sin(a) * (0.18 + 0.30 * ext) * s)
         cv2.line(img, (x0, y0), (x1, y1), color, thick, cv2.LINE_AA)
         cv2.circle(img, (x1, y1), thick + 1, color, -1, cv2.LINE_AA)
@@ -3210,19 +3224,26 @@ def draw_gesture_anim(img, x, y, size, kind, now, color=PAPER):
         _hand_glyph(img, cx + wob, cy, s, CURLED, thumb=(50, 0.15),
                     color=color)
     elif kind == "turn":
-        # An open hand ROTATING to show its back - the calibration step used
-        # the fist glyph, which told the user to make a fist. It squashes
-        # horizontally through the turn, then the thumb reappears on the
-        # other side, which is what turning a hand over actually looks like.
-        ph = (math.cos(2 * math.pi * t) + 1) / 2       # 1 -> 0 -> 1
-        squash = max(0.12, ph)
-        back = ph < 0.5 or t > 0.5
+        # The palm, then THE SAME PALM REVERSED - thumb on the other side.
+        # The 8.2 version eased through the rotation, so most frames were an
+        # edge-on sliver that read as a stick, not a hand. Now the loop
+        # DWELLS on the two poses and the flip itself takes ~0.3s: you see
+        # a palm, a quick turn, and the back of that palm. Nothing else.
+        T = 4.0                                        # its own calm period
+        u = (now % T) / T
+        if u < 0.42:
+            side = 1.0                                 # palm, held
+        elif u < 0.50:
+            side = math.cos(math.pi * (u - 0.42) / 0.08)   # fast flip over
+        elif u < 0.92:
+            side = -1.0                                # back of hand, held
+        else:
+            side = -math.cos(math.pi * (u - 0.92) / 0.08)  # fast flip home
+        squash = max(0.15, abs(side))
         fingers = [(1.0, sx * squash) for (_e, sx) in SPREAD]
-        if t > 0.5:                                    # back of the hand
-            fingers = [(1.0, -sx * squash) for (_e, sx) in SPREAD]
         _hand_glyph(img, cx, cy, s, fingers,
-                    thumb=(20, 1.0 * squash) if squash > 0.35 else None,
-                    color=color, squash=squash)
+                    thumb=(20, 1.0) if squash > 0.6 else None,
+                    color=color, squash=squash, mirror=side < 0)
         aw = int(0.42 * s)
         cv2.ellipse(img, (int(cx), int(cy + 0.62 * s)), (aw, int(0.12 * s)),
                     0, 200, 340, color, 1, cv2.LINE_AA)
@@ -3440,7 +3461,15 @@ def run_calibration(cap, engine, cfg, aspect):
               ("Now the back of your hand", "Turn your hand over, keeping it "
                "open, and hold it there.", "turn", 5.0)]
     means, labels = [], []
+    # drawn at 2x into an 1100x700 window, same as the onboarding - this is
+    # the FIRST screen a new user ever sees, it cannot be the blurry one.
+    # The canvas is allocated once and memset-cleared: doing either per
+    # frame costs more than all the drawing put together.
     W, H = 1100, 700
+    S = Onboarding.SS
+    G = GRID * S
+    CW, CH = W * S, H * S
+    canvas = np.zeros((CH, CW, 3), np.uint8)
     for phase_idx, (title, how, anim, seconds) in enumerate(phases):
         samples, t0 = [], None
         while True:
@@ -3474,51 +3503,52 @@ def run_calibration(cap, engine, cfg, aspect):
 
             # Same screen as every tutorial lesson - this IS a lesson, and
             # dressing it as a different thing is what made it feel abrupt.
-            frame = np.zeros((H, W, 3), np.uint8)
-            frame[:] = INK
-            pad, card, cy = 7 * GRID, 380, H // 2
+            canvas.fill(INK[0])
+            frame = canvas
+            pad, card, cy = 7 * G, 380 * S, CH // 2
             rounded_rect(frame, (pad, cy - card // 2),
-                         (pad + card, cy + card // 2), 3 * GRID, RAISED, -1)
+                         (pad + card, cy + card // 2), 3 * G, RAISED, -1)
             rounded_rect(frame, (pad, cy - card // 2),
-                         (pad + card, cy + card // 2), 3 * GRID, HAIR, 1)
+                         (pad + card, cy + card // 2), 3 * G, HAIR, 1)
             draw_gesture_anim(frame, pad + card // 8, cy - card // 2 + card // 8,
                               int(card * 0.75), anim, now)
             if r is not None:                       # your own hand, mirrored
-                small = 150
-                sx, sy = pad + card - small - 2 * GRID, cy + card // 2 - small - 2 * GRID
+                small = 150 * S
+                sx, sy = pad + card - small - 2 * G, cy + card // 2 - small - 2 * G
                 rounded_rect(frame, (sx, sy), (sx + small, sy + small),
-                             2 * GRID, INK, -1)
+                             2 * G, INK, -1)
                 rounded_rect(frame, (sx, sy), (sx + small, sy + small),
-                             2 * GRID, HAIR, 1)
+                             2 * G, HAIR, 1)
                 pts = [(int(sx + l.x * small), int(sy + l.y * small))
                        for l in r[0]]
                 for i0, j0 in mp.solutions.hands.HAND_CONNECTIONS:
-                    cv2.line(frame, pts[i0], pts[j0], SILVER, 1, cv2.LINE_AA)
+                    cv2.line(frame, pts[i0], pts[j0], SILVER, S, cv2.LINE_AA)
 
-            tx = pad + card + 6 * GRID
-            sf(frame, f"Setup  {phase_idx + 1} of 2", (tx, cy - 12 * GRID),
-               12.0, 0.3, GREY, 255, tracking=1.6)
-            sf(frame, title, (tx, cy - 7 * GRID), 34.0, 0.62, PAPER)
-            for i, line in enumerate(wrap_lines(how, 18.0, 0.1, W - tx - pad)):
-                sf(frame, line, (tx, cy - 2 * GRID + i * 4 * GRID), 18.0, 0.1,
+            tx = pad + card + 6 * G
+            sf(frame, f"Setup  {phase_idx + 1} of 2", (tx, cy - 12 * G),
+               12.0 * S, 0.3, GREY, 255, tracking=1.6 * S)
+            sf(frame, title, (tx, cy - 7 * G), 34.0 * S, 0.62, PAPER)
+            for i, line in enumerate(wrap_lines(how, 18.0 * S, 0.1,
+                                                CW - tx - pad)):
+                sf(frame, line, (tx, cy - 2 * G + i * 4 * G), 18.0 * S, 0.1,
                    PAPER)
             sf(frame, "Sleyth is learning which way your hand faces. It only "
-               "has to happen once.", (tx, cy + 5 * GRID), 15.0, 0.0, GREY)
+               "has to happen once.", (tx, cy + 5 * G), 15.0 * S, 0.0, GREY)
 
             # a 5-second ring: unmistakable, and it restarts if you drop out
-            rr, rx, ry = 26, tx + 26, cy + 13 * GRID
-            cv2.circle(frame, (rx, ry), rr, HAIR, 3, cv2.LINE_AA)
+            rr, rx, ry = 26 * S, tx + 26 * S, cy + 13 * G
+            cv2.circle(frame, (rx, ry), rr, HAIR, 3 * S, cv2.LINE_AA)
             if frac > 0:
                 cv2.ellipse(frame, (rx, ry), (rr, rr), -90, 0,
-                            int(360 * frac), PAPER, 3, cv2.LINE_AA)
+                            int(360 * frac), PAPER, 3 * S, cv2.LINE_AA)
             left = max(0.0, seconds - (now - t0)) if t0 else seconds
-            sf(frame, f"{left:.0f}", (rx, ry), 20.0, 0.5, PAPER,
+            sf(frame, f"{left:.0f}", (rx, ry), 20.0 * S, 0.5, PAPER,
                align="center")
             sf(frame, "hold it there" if t0 else
                ("hold your hand up, well lit"),
-               (rx + 5 * GRID, ry), 15.0, 0.3,
+               (rx + 5 * G, ry), 15.0 * S, 0.3,
                PAPER if t0 else SILVER)
-            sf(frame, "esc to cancel", (W - 5 * GRID, H - 4 * GRID), 12.0,
+            sf(frame, "esc to cancel", (CW - 5 * G, CH - 4 * G), 12.0 * S,
                0.0, GREY, 150, align="right")
 
             cv2.imshow("Sleyth", frame)
@@ -3664,6 +3694,11 @@ def main():
               "press c once to recalibrate.")
     if cfg["palm_sign"] == 0.0:
         print("First run: palm calibration.")
+        # the window must exist as WINDOW_NORMAL at 1100x700 BEFORE the 2x
+        # canvas is shown - letting imshow auto-create it would size the
+        # window to the canvas: 2200x1400 points, bigger than the screen
+        ensure_cv_window()
+        place_window("full")
         while True:
             r = run_calibration(cam, engine, cfg, aspect)
             if r == "ok":
